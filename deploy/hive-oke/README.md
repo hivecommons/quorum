@@ -4,27 +4,27 @@ Quorum (RFC #1) uses one shared Vexa control plane per cluster. On hive-oke it r
 `meetings`, and nothing outside that namespace is touched. The only cluster-scoped object is the
 `meetings` Namespace.
 
-| File | What it is |
-|---|---|
-| `namespace.yaml` | Namespace `meetings` (Pod Security baseline in warn/audit mode) |
-| `values.yaml` | Helm values for the Vexa chart, plus the `quorum` block read by `install.sh` |
-| `versitygw.yaml` | In-namespace S3 endpoint (versitygw, POSIX backend on a 50Gi `oci-bv` PVC), bucket Job |
-| `transcription.yaml` | CPU Whisper (faster-whisper `small`, int8) Deployment and Service |
-| `policy.yaml` | LimitRange and gateway NetworkPolicy |
-| `install.sh` | Idempotent install/upgrade: Secrets, policy, ResourceQuota, storage, STT, Helm, tenant |
-| `smoke.sh` | Smoke test with the tenant key from a throwaway Pod |
+| File                 | What it is                                                                             |
+| -------------------- | -------------------------------------------------------------------------------------- |
+| `namespace.yaml`     | Namespace `meetings` (Pod Security baseline in warn/audit mode)                        |
+| `values.yaml`        | Helm values for the Vexa chart, plus the `quorum` block read by `install.sh`           |
+| `versitygw.yaml`     | In-namespace S3 endpoint (versitygw, POSIX backend on a 50Gi `oci-bv` PVC), bucket Job |
+| `transcription.yaml` | CPU Whisper (faster-whisper `small`, int8) Deployment and Service                      |
+| `policy.yaml`        | LimitRange and gateway NetworkPolicy                                                   |
+| `install.sh`         | Idempotent install/upgrade: Secrets, policy, ResourceQuota, storage, STT, Helm, tenant |
+| `smoke.sh`           | Smoke test with the tenant key from a throwaway Pod                                    |
 
 ## Versions (all pinned by tag and digest)
 
-| Component | Image |
-|---|---|
-| Chart | `deploy/helm/charts/vexa` from hivecommons/vexa tag `v0.12.28` (chart 0.12.2, appVersion 0.12.28) |
-| gateway, admin-api, meeting-api, runtime | `docker.io/vexaai/v012-*:v0.12.28` (upstream, amd64 + arm64) |
-| meeting bot | `ghcr.io/hivecommons/vexa-bot:v0.12.28-quorum.1` |
-| CPU transcription | `ghcr.io/hivecommons/vexa-transcription-cpu:v0.12.28-quorum.1` |
-| postgres | `docker.io/library/postgres:17.11-alpine` |
-| redis | `docker.io/valkey/valkey:8.1.11-alpine` |
-| S3 | `docker.io/versity/versitygw:v1.10.0` |
+| Component                                | Image                                                                                             |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Chart                                    | `deploy/helm/charts/vexa` from hivecommons/vexa tag `v0.12.28` (chart 0.12.2, appVersion 0.12.28) |
+| gateway, admin-api, meeting-api, runtime | `docker.io/vexaai/v012-*:v0.12.28` (upstream, amd64 + arm64)                                      |
+| meeting bot                              | `ghcr.io/hivecommons/vexa-bot:v0.12.28-quorum.1`                                                  |
+| CPU transcription                        | `ghcr.io/hivecommons/vexa-transcription-cpu:v0.12.28-quorum.1`                                    |
+| postgres                                 | `docker.io/library/postgres:17.11-alpine`                                                         |
+| redis                                    | `docker.io/valkey/valkey:8.1.11-alpine`                                                           |
+| S3                                       | `docker.io/versity/versitygw:v1.10.0`                                                             |
 
 Upstream publishes `vexaai/vexa-bot` for amd64 only and no CPU transcription image. Every
 hive-oke node is arm64, so hivecommons/vexa builds both for amd64 and arm64
@@ -47,7 +47,7 @@ because hive-oke runs CRI-O with short-name mode set to enforcing.
 - `RECORDING_ENABLED=false`: no audio or video recording unless a request explicitly asks for it.
 - The captured-signal tape (raw capture fixture uploads, upstream default ON) is turned off
   fleet-wide by `install.sh` through admin-api `PUT /internal/settings/diagnostics
-  {"capture_signal": "false"}`.
+{"capture_signal": "false"}`.
 - Bot display name: "Hive notes (AI notetaker)".
 
 ## Limits
@@ -72,12 +72,12 @@ sees only its own meetings.
 
 ## Secrets (names only; values are random, created by install.sh, never in git)
 
-| Secret | Keys | Used by |
-|---|---|---|
-| `vexa-admin` | `ADMIN_API_TOKEN`, `INTERNAL_API_SECRET`, `TRANSCRIPTION_SERVICE_TOKEN`, `VEXA_DISPATCH_SIGNING_KEY`, `NEXTAUTH_SECRET`, `VEXA_SERVICE_AUTHORITY_SECRET`, `VEXA_SYSTEM_WEBHOOK_SECRET` | chart (`secrets.existingSecretName`), transcription |
-| `vexa-s3` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | chart (`storage.s3.existingSecret`), versitygw root user |
-| `vexa-tenant-hivecommons-hive` | `api-key` | hive's hive (hosted hive `hosted-available-oke-11-placeholder-r05x`); scopes `bot`, `tx` |
-| `postgres-credentials` | chart-managed | postgres |
+| Secret                         | Keys                                                                                                                                                                                   | Used by                                                                                  |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `vexa-admin`                   | `ADMIN_API_TOKEN`, `INTERNAL_API_SECRET`, `TRANSCRIPTION_SERVICE_TOKEN`, `VEXA_DISPATCH_SIGNING_KEY`, `NEXTAUTH_SECRET`, `VEXA_SERVICE_AUTHORITY_SECRET`, `VEXA_SYSTEM_WEBHOOK_SECRET` | chart (`secrets.existingSecretName`), transcription                                      |
+| `vexa-s3`                      | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`                                                                                                                                           | chart (`storage.s3.existingSecret`), versitygw root user                                 |
+| `vexa-tenant-hivecommons-hive` | `api-key`                                                                                                                                                                              | hive's hive (hosted hive `hosted-available-oke-11-placeholder-r05x`); scopes `bot`, `tx` |
+| `postgres-credentials`         | chart-managed                                                                                                                                                                          | postgres                                                                                 |
 
 The admin credential is `ADMIN_API_TOKEN` (header `X-Admin-API-Key` on admin-api). Following
 the upstream Kubernetes docs, it is minted at install time and kept in `vexa-admin`.
