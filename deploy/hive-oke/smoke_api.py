@@ -7,7 +7,10 @@ Against a bot sent to a Meet code that does not exist, it checks that:
   * /ws accepts the key and delivers a meeting.status frame for the bot;
   * POST /bots/google_meet/<id>/chat exists (a 4xx about the bot's state, not a 404 for a missing
     route);
-  * POST /bots/google_meet/<id>/speak exists (409 when the bot was not sent with voice, or 200);
+  * the bot is sent with voice (voice_agent_enabled: true), so POST /bots is a 2xx, not the 422
+    of a deployment without TTS_SERVICE_URL;
+  * POST /bots/google_meet/<id>/speak answers 409 "not in the meeting" (the bot can never be
+    admitted), never the voice-disabled 409 or a 404;
   * DELETE /bots/google_meet/<id> stops the bot.
 Prints one `CHECK <name> PASS|FAIL <detail>` line per check and exits non-zero on any FAIL.
 """
@@ -34,6 +37,10 @@ STATUS_WAIT = int(os.environ.get("STATUS_WAIT", "90"))
 TAIL_WAIT = int(os.environ.get("TAIL_WAIT", "20"))
 # HTTP status the gateway gives a path no route serves.
 NOT_FOUND = 404
+CONFLICT = 409
+# meeting-api's /speak details: the bot has not been admitted yet / was sent without voice.
+SPEAK_NOT_IN_MEETING = "not in the meeting"
+VOICE_DISABLED = "not sent with voice_agent_enabled"
 WS_OPCODE_TEXT = 0x1
 WS_OPCODE_CLOSE = 0x8
 WS_OPCODE_PING = 0x9
@@ -156,8 +163,9 @@ def main():
 
     threading.Thread(target=reader, daemon=True).start()
 
-    st, body = api("POST", "/bots", {"platform": PLATFORM, "native_meeting_id": MEET_CODE})
-    check("bot_create", st in (200, 201), f"HTTP {st} {body[:200]}")
+    st, body = api("POST", "/bots", {"platform": PLATFORM, "native_meeting_id": MEET_CODE,
+                                     "voice_agent_enabled": True})
+    check("bot_create_voice", st in (200, 201), f"HTTP {st} {body[:200]}")
     ws.send_text(json.dumps({"action": "subscribe",
                              "meetings": [{"platform": PLATFORM, "native_id": MEET_CODE}]}))
 
@@ -166,7 +174,8 @@ def main():
     st, body = api("POST", f"{path}/chat", {"text": "quorum smoke"})
     check("chat_route", 400 <= st < 500 and not route_missing(st, body), f"HTTP {st} {body[:200]}")
     st, body = api("POST", f"{path}/speak", {"text": "quorum smoke"})
-    check("speak_route", st in (200, 409), f"HTTP {st} {body[:200]}")
+    check("speak_route", st == CONFLICT and SPEAK_NOT_IN_MEETING in body
+          and VOICE_DISABLED not in body, f"HTTP {st} {body[:200]}")
 
     deadline = time.time() + STATUS_WAIT
     status_frame = None

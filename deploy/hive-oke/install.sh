@@ -65,6 +65,17 @@ for key in REDIS_PASSWORD RUNTIME_API_TOKEN VEXA_MCP_DELEGATION_SECRET; do
   fi
 done
 
+# TTS key: TTS_API_TOKEN is what meeting-api hands voice bots (sent as X-API-Key); API_KEYS is the
+# same value as the JSON list the TTS service (Kokoro-FastAPI) reads.
+if ! has_secret vexa-tts; then
+  tts_token="$(rand "$SECRET_BYTES")"
+  k create secret generic vexa-tts \
+    --from-literal=TTS_API_TOKEN="$tts_token" \
+    --from-literal=API_KEYS="[\"$tts_token\"]" >/dev/null
+  unset tts_token
+  echo "created secret/vexa-tts"
+fi
+
 echo "==> policy: LimitRange, NetworkPolicy, ResourceQuota (pods = $CP_PODS + $MAX_BOTS bots)"
 k apply -f "$HERE/policy.yaml"
 k apply -f - <<EOF
@@ -93,6 +104,10 @@ k wait --for=condition=complete job/versitygw-bucket --timeout=5m
 echo "==> CPU transcription"
 k apply -f "$HERE/transcription.yaml"
 k rollout status deploy/vexa-transcription --timeout="$ROLLOUT_TIMEOUT"
+
+echo "==> CPU text-to-speech (Kokoro)"
+k apply -f "$HERE/tts.yaml"
+k rollout status deploy/vexa-tts --timeout="$ROLLOUT_TIMEOUT"
 
 echo "==> helm release $RELEASE"
 helm --kube-context "$CTX" upgrade --install "$RELEASE" "$VEXA_CHART" -n "$NS" \

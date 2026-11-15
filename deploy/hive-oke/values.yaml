@@ -26,9 +26,9 @@ quorum:
   # Raising it needs node capacity: each bot is Guaranteed at runtime.workloadResources.meetingBot.
   maxConcurrentBots: 4
   # Steady-state non-bot Pods in `meetings`: gateway 2, admin-api 2, meeting-api 2, runtime 1,
-  # postgres 1, redis 1, versitygw 1, transcription 1. While a rollout surges, or an ops Pod
-  # (bucket Job, smoke test) runs, it uses bot slots; a rollout waits for a free slot.
-  controlPlanePods: 11
+  # postgres 1, redis 1, versitygw 1, transcription 1, tts 1. While a rollout surges, or an ops
+  # Pod (bucket Job, smoke test) runs, it uses bot slots; a rollout waits for a free slot.
+  controlPlanePods: 12
   tenant:
     name: hivecommons-hive
     hostedHiveId: hosted-available-oke-11-placeholder-r05x
@@ -99,10 +99,17 @@ meetingApi:
     # No audio or video recording unless a request explicitly asks for it.
     - name: RECORDING_ENABLED
       value: "false"
-    # No bot speaks: there is no TTS service in this namespace (no TTS_SERVICE_URL), so POST /bots
-    # with voice_agent_enabled answers 422 and POST .../speak answers 409. See README "Voice".
+    # Voice: a bot may speak only when its POST /bots says voice_agent_enabled: true (Quorum
+    # sends that only for meeting.join with voice). This is the default for a request that does
+    # not say, so it stays "false": true would make every bot a speaking bot. See README "Voice".
     - name: VOICE_AGENT_ENABLED
       value: "false"
+    # Self-hosted Kokoro TTS in this namespace (tts.yaml), handed to voice bots.
+    - name: TTS_SERVICE_URL
+      value: http://vexa-tts:8880
+    - name: TTS_API_TOKEN
+      valueFrom:
+        secretKeyRef: { name: vexa-tts, key: TTS_API_TOKEN }
 
 runtime:
   backend: k8s

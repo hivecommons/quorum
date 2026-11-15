@@ -4,11 +4,13 @@
 # secretKeyRef, so the key is never printed or copied out of the cluster. smoke_api.py runs inside
 # it (standard library only).
 #
-# Checks: gateway and transcription health; a bot for a Meet code that does not exist is
+# Checks: gateway and transcription health; the TTS service returns 24 kHz PCM for a short
+# sentence with the key (and 401 without it); a voice bot for a Meet code that does not exist is
 # scheduled on arm64 and starts (no exec format error); /ws connects and sends a meeting.status
-# frame for that bot; the chat and speak routes exist (a 4xx about the bot's state, never a
-# missing-route 404); DELETE stops the bot; no bot Pods linger; the bucket holds no objects
-# (recording and the captured-signal tape are off); the captured-signal setting reads "false".
+# frame for that bot; the chat route answers a 4xx about the bot's state (never a missing-route
+# 404) and /speak a 409 "not in the meeting"; DELETE stops the bot; no bot Pods linger; the
+# bucket holds no objects (recording and the captured-signal tape are off); the captured-signal
+# setting reads "false".
 set -euo pipefail
 CTX="${KUBE_CONTEXT:-hive-oke}"
 NS=meetings
@@ -45,6 +47,8 @@ spec:
       env:
         - name: API_KEY
           valueFrom: { secretKeyRef: { name: vexa-tenant-$TENANT, key: api-key } }
+        - name: TTS_API_TOKEN
+          valueFrom: { secretKeyRef: { name: vexa-tts, key: TTS_API_TOKEN } }
         - name: MEET_CODE
           value: $MEET_CODE
       resources:
@@ -55,6 +59,37 @@ k wait --for=condition=Ready "pod/$POD" --timeout=120s >/dev/null
 
 echo "--- transcription /health"
 k exec "$POD" -- python3 -c "import urllib.request as u; print('HTTP', u.urlopen('http://vexa-transcription:8000/health', timeout=10).status)"
+
+echo "--- TTS (vexa-tts /v1/audio/speech, called the way a voice bot calls it)"
+k exec -i "$POD" -- python3 - <<'PY' || fail=1
+import json, os, time, urllib.error, urllib.request
+URL = "http://vexa-tts:8880/v1/audio/speech"
+# The bot's request body (tts-playback.ts); voice "auto" is what it sends when none was given.
+BODY = {"model": "tts-1", "input": "Hello, this is the hive taking notes.", "voice": "auto",
+        "response_format": "pcm"}
+SAMPLE_RATE = 24000
+BYTES_PER_SAMPLE = 2
+MIN_SECONDS = 0.5
+TIMEOUT = 120
+def post(headers):
+    req = urllib.request.Request(URL, method="POST", data=json.dumps(BODY).encode(),
+                                 headers={"Content-Type": "application/json", **headers})
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+st, _ = post({})
+keyed = st == 401
+print(f"CHECK tts_needs_key {'PASS' if keyed else 'FAIL'} HTTP {st}")
+t0 = time.time()
+st, audio = post({"X-API-Key": os.environ["TTS_API_TOKEN"]})
+secs = len(audio) / (SAMPLE_RATE * BYTES_PER_SAMPLE)
+ok = st == 200 and len(audio) % BYTES_PER_SAMPLE == 0 and secs >= MIN_SECONDS
+print(f"CHECK tts_speech {'PASS' if ok else 'FAIL'} HTTP {st}, {len(audio)} bytes"
+      f" = {secs:.2f}s of 24 kHz s16le, synthesized in {time.time() - t0:.2f}s")
+raise SystemExit(0 if ok and keyed else 1)
+PY
 
 # Bot Pod watcher: reports the node arch and the first log lines while smoke_api.py runs.
 (

@@ -4,16 +4,17 @@ Quorum (RFC #1) uses one shared Vexa control plane per cluster. On hive-oke it r
 `meetings`, and nothing outside that namespace is touched. The only cluster-scoped object is the
 `meetings` Namespace.
 
-| File                 | What it is                                                                             |
-| -------------------- | -------------------------------------------------------------------------------------- |
-| `namespace.yaml`     | Namespace `meetings` (Pod Security baseline in warn/audit mode)                        |
-| `values.yaml`        | Helm values for the Vexa chart, plus the `quorum` block read by `install.sh`           |
-| `versitygw.yaml`     | In-namespace S3 endpoint (versitygw, POSIX backend on a 50Gi `oci-bv` PVC), bucket Job |
-| `transcription.yaml` | CPU Whisper (faster-whisper `small`, int8) Deployment and Service                      |
-| `policy.yaml`        | LimitRange and gateway NetworkPolicy                                                   |
-| `install.sh`         | Idempotent install/upgrade: Secrets, policy, ResourceQuota, storage, STT, Helm, tenant |
-| `smoke.sh`           | Smoke test with the tenant key from a throwaway Pod                                    |
-| `smoke_api.py`       | The API half of the smoke test (health, `/ws`, chat, speak), run inside that Pod       |
+| File                 | What it is                                                                                  |
+| -------------------- | ------------------------------------------------------------------------------------------- |
+| `namespace.yaml`     | Namespace `meetings` (Pod Security baseline in warn/audit mode)                             |
+| `values.yaml`        | Helm values for the Vexa chart, plus the `quorum` block read by `install.sh`                |
+| `versitygw.yaml`     | In-namespace S3 endpoint (versitygw, POSIX backend on a 50Gi `oci-bv` PVC), bucket Job      |
+| `transcription.yaml` | CPU Whisper (faster-whisper `small`, int8) Deployment and Service                           |
+| `tts.yaml`           | CPU text-to-speech (Kokoro via Kokoro-FastAPI) Deployment, Service, voice-map ConfigMap     |
+| `policy.yaml`        | LimitRange and gateway NetworkPolicy                                                        |
+| `install.sh`         | Idempotent install/upgrade: Secrets, policy, ResourceQuota, storage, STT, TTS, Helm, tenant |
+| `smoke.sh`           | Smoke test with the tenant key from a throwaway Pod (includes a direct TTS call)            |
+| `smoke_api.py`       | The API half of the smoke test (health, `/ws`, chat, speak), run inside that Pod            |
 
 ## Versions (all pinned by tag and digest)
 
@@ -36,9 +37,10 @@ are on upstream `main`, and upstream publishes control-plane images only for rel
 | postgres                                 | `docker.io/library/postgres:17.11-alpine`                                        |
 | redis                                    | `docker.io/valkey/valkey:8.1.11-alpine`                                          |
 | S3                                       | `docker.io/versity/versitygw:v1.10.0`                                            |
+| TTS (not Vexa; upstream image)           | `ghcr.io/remsky/kokoro-fastapi-cpu:v0.10.0`                                      |
 
-Digests are in `values.yaml` and `transcription.yaml`. Each Vexa image is a manifest list with
-linux/amd64 and linux/arm64, built on native runners by `.github/workflows/quorum-images.yml` in
+Digests are in `values.yaml`, `transcription.yaml` and `tts.yaml`. Each Vexa image is a manifest
+list with linux/amd64 and linux/arm64, built on native runners by `.github/workflows/quorum-images.yml` in
 hivecommons/vexa (`source=main`). Every hive-oke node is arm64. Images must be fully qualified
 (`docker.io/...`, `ghcr.io/...`) because hive-oke runs CRI-O with short-name mode set to
 enforcing.
@@ -56,6 +58,8 @@ enforcing.
 - Bots: one bare Pod per meeting, created by the runtime. Each is Guaranteed at 1 CPU / 2560Mi
   (`runtime.workloadResources.meetingBot`) and pinned to `kubernetes.io/arch: arm64`.
 - Transcription: `vexa-transcription:8000`, 2-4 CPU / 2-4Gi. It needs `TRANSCRIPTION_SERVICE_TOKEN`.
+- Text-to-speech: `vexa-tts:8880`, 1-2 CPU / 1.5-3Gi (about 1.05Gi resident idle; a short
+  sentence takes about 3 s on 2 CPUs). It needs `TTS_API_TOKEN`. See Voice.
 
 ## Meeting API used by Quorum
 
@@ -69,14 +73,47 @@ enforcing.
 
 ## Voice
 
-Voice is **off**. A speaking bot synthesizes through an OpenAI-compatible TTS service
-(`TTS_SERVICE_URL` + `/v1/audio/speech`, header `X-API-Key: $TTS_API_TOKEN`, 24 kHz s16le PCM),
-which meeting-api hands to bots sent with `voice_agent_enabled: true`. Vexa `main` ships no TTS
-service: the only one it ever had (`services/tts-service`, removed after v0.9) forwarded to the
-paid OpenAI API. So `meetings` has no `TTS_SERVICE_URL`, `VOICE_AGENT_ENABLED` is `false`,
-`POST /bots` with `voice_agent_enabled: true` answers 422, and `POST .../speak` answers 409 (the
-route exists). Turning voice on needs a self-hosted CPU TTS that serves that endpoint, deployed
-in `meetings` with `TTS_SERVICE_URL` / `TTS_API_TOKEN` set on meeting-api.
+Voice is **available per bot, off by default**.
+
+**TTS service.** [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) (model weights
+Apache-2.0) served by [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI) (Apache-2.0)
+v0.10.0, the upstream CPU image
+`ghcr.io/remsky/kokoro-fastapi-cpu:v0.10.0@sha256:f54c5960c2b9387f6349080a9944f8bc7e8cdb98a4ef9238cb0b0f9ff9795f44`
+(manifest list, linux/amd64 + linux/arm64, model and voices baked in, `DOWNLOAD_MODEL=false` so it
+never downloads). It runs only in `meetings` (`tts.yaml`, Service `vexa-tts:8880`, ClusterIP), on
+CPU, and calls no external or paid API. Chosen on 2026-11-15: Kokoro-FastAPI had 140 commits in
+the previous 90 days (v0.10.0 released 2026-11-08) and serves the OpenAI-compatible endpoint the
+bot calls. Piper was the alternative, but rhasspy/piper (MIT) is archived and its maintained
+successor, OHF-Voice/piper1-gpl, is GPL-3.0. Only the HTTP API is on: web player, websocket TTS,
+inline `[voice:...]` tags and SSML are disabled (`ENABLE_*` in `tts.yaml`).
+
+**What the bot sends.** A bot sent with voice gets `TTS_SERVICE_URL=http://vexa-tts:8880` and
+`TTS_API_TOKEN` from meeting-api (as plain env on its Pod; bots without voice get neither) and, for each spoken line, POSTs
+`/v1/audio/speech {"model": "tts-1", "input": <text>, "voice": <voice or "auto">,
+"response_format": "pcm"}` with header `X-API-Key: $TTS_API_TOKEN`. It streams the reply (raw
+24 kHz s16le mono, Kokoro's native rate) into `paplay` on its PulseAudio `tts_sink`, which
+Chromium captures as its microphone; the sink is unmuted only while a line plays. Kokoro-FastAPI
+checks the key against `API_KEYS` (a request without it gets 401). It rejects the voice `auto`,
+so ConfigMap `vexa-tts-mappings` replaces the image's `openai_mappings.json` with the same file
+plus `"auto": "af_heart"`; re-copy it from the new tag when the image is bumped. OpenAI voice
+names (`alloy`, `nova`, ...) and Kokoro voice ids (`af_heart`, `bm_george`, ...) also work.
+
+**How voice is gated.**
+
+1. Hive policy decides whether hive may speak in a meeting (voice rules, consent, budgets; see
+   `docs/contract.md`). Only then does it call quorum `say`.
+2. quorum `meeting.join {voice: true}` (default `QUORUM_VEXA_VOICE=false`) is the only way a bot
+   is started able to speak: quorum then sends `voice_agent_enabled: true` on `POST /bots`.
+   Without it quorum's `say` answers `platform_unavailable`.
+3. meeting-api: `VOICE_AGENT_ENABLED` stays `"false"`. It is the default for a `POST /bots` that
+   does not say, and quorum omits the field when voice is off, so `true` would make every bot a
+   speaking bot. `POST /bots` with `voice_agent_enabled: true` works because `TTS_SERVICE_URL`
+   is set (without it, 422).
+4. `POST .../speak` answers 409 until the bot is admitted, 409 for a bot sent without voice,
+   and is limited per meeting (`SPEAK_POSTS_PER_WINDOW` per `SPEAK_WINDOW_SEC`).
+
+`smoke.sh` checks the TTS directly (24 kHz PCM back for a short sentence, 401 without the key),
+then sends a voice bot (201) and expects `/speak` to answer 409 "not in the meeting".
 
 ## Privacy defaults
 
@@ -90,8 +127,8 @@ in `meetings` with `TTS_SERVICE_URL` / `TTS_API_TOKEN` set on meeting-api.
 ## Limits
 
 - `quorum.maxConcurrentBots: 4` in `values.yaml` is the single source. It is enforced in two places:
-  - ResourceQuota `meetings-quota` sets `pods` = `controlPlanePods` (11) + 4. A quota cannot select
-    only bot Pods, so while a rollout surges or an ops Pod runs, that Pod uses a bot slot, and
+  - ResourceQuota `meetings-quota` sets `pods` = `controlPlanePods` (12, including vexa-tts) + 4.
+    A quota cannot select only bot Pods, so while a rollout surges or an ops Pod runs, that Pod uses a bot slot, and
     a rollout waits for a free slot.
   - The tenant user's `max_concurrent_bots` in admin-api, set to the same value.
 - LimitRange `meetings-defaults` sets defaults for containers without resources: 1-1.5 CPU,
@@ -115,6 +152,7 @@ sees only its own meetings.
 | Secret                         | Keys                                                                                                                                                                                                                                                        | Used by                                                                                  |
 | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
 | `vexa-admin`                   | `ADMIN_API_TOKEN`, `INTERNAL_API_SECRET`, `TRANSCRIPTION_SERVICE_TOKEN`, `VEXA_DISPATCH_SIGNING_KEY`, `NEXTAUTH_SECRET`, `VEXA_SERVICE_AUTHORITY_SECRET`, `VEXA_SYSTEM_WEBHOOK_SECRET`, `REDIS_PASSWORD`, `RUNTIME_API_TOKEN`, `VEXA_MCP_DELEGATION_SECRET` | chart (`secrets.existingSecretName`), transcription                                      |
+| `vexa-tts`                     | `TTS_API_TOKEN`, `API_KEYS` (the same value as a JSON list)                                                                                                                                                                                                 | meeting-api (handed to voice bots), vexa-tts                                             |
 | `vexa-s3`                      | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`                                                                                                                                                                                                                | chart (`storage.s3.existingSecret`), versitygw root user                                 |
 | `vexa-tenant-hivecommons-hive` | `api-key`                                                                                                                                                                                                                                                   | hive's hive (hosted hive `hosted-available-oke-11-placeholder-r05x`); scopes `bot`, `tx` |
 | `postgres-credentials`         | chart-managed                                                                                                                                                                                                                                               | postgres                                                                                 |
