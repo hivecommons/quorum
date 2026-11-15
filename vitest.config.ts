@@ -10,6 +10,8 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       include: ["src/**/*.ts"],
+      // The executable entry only wires process signals to cli.main, which is tested directly.
+      exclude: ["src/bin.ts"],
       reporter: ["text", "json-summary", "lcov"],
       thresholds: {
         lines: COVERAGE_THRESHOLD_PERCENT,
