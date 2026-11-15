@@ -102,12 +102,8 @@ export async function startQuorum(
     async close() {
       clearInterval(sweeper);
       stream?.stop();
-      const closers = new Set(
-        Object.values(adapters)
-          .map((a) => a?.close)
-          .filter((c) => c !== undefined),
-      );
-      await Promise.all([...closers].map((c) => c()));
+      const unique = new Set(Object.values(adapters));
+      await Promise.all([...unique].map((a) => a?.close?.()));
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },

@@ -2,6 +2,7 @@ import { loadConfig } from "./config.js";
 import { createLogger, parseLevel, type Logger } from "./log.js";
 import { startQuorum, type AdapterFactory, type RunningQuorum } from "./app.js";
 import { CONTRACT_VERSION, VERSION } from "./version.js";
+import { discordAdapters } from "./discord/index.js";
 
 const USAGE = `quorum ${VERSION} (${CONTRACT_VERSION})
 
@@ -43,7 +44,7 @@ export async function main(argv: string[], io: CliIo): Promise<number | RunningQ
   }
   const log = io.logger ?? createLogger(parseLevel(config.logLevel));
   try {
-    return await startQuorum(config, log, io.adapters);
+    return await startQuorum(config, log, io.adapters ?? discordAdapters());
   } catch (err) {
     io.err(`quorum: ${(err as Error).message}\n`);
     return 1;

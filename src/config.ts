@@ -26,6 +26,7 @@ export const DEFAULTS = {
   discordMinSegmentMs: 300,
   discordMaxSegmentS: 30,
   discordJoinTimeoutS: 20,
+  discordRequestTtlS: 300,
   transcribeTimeoutMs: 60_000,
 } as const;
 
@@ -58,6 +59,7 @@ export interface Config {
   discordMinSegmentMs: number;
   discordMaxSegmentS: number;
   discordJoinTimeoutS: number;
+  discordRequestTtlS: number;
   transcribeTimeoutMs: number;
   logLevel: string | undefined;
 }
@@ -152,6 +154,11 @@ export function loadConfig(env: Env = process.env): Config {
       env,
       "QUORUM_DISCORD_JOIN_TIMEOUT_S",
       DEFAULTS.discordJoinTimeoutS,
+    ),
+    discordRequestTtlS: positiveInt(
+      env,
+      "QUORUM_DISCORD_REQUEST_TTL_S",
+      DEFAULTS.discordRequestTtlS,
     ),
     transcribeTimeoutMs: positiveInt(
       env,
