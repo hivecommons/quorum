@@ -1,0 +1,52 @@
+# Namespace policy for `meetings`. The ResourceQuota is NOT here: install.sh renders it from
+# values.yaml (quorum.maxConcurrentBots + quorum.controlPlanePods) so the bot cap has one source.
+---
+# Defaults for any container that declares no resources. Values follow upstream Vexa's
+# production guidance for bot Pods (deployment-kubernetes docs: "Namespace LimitRange defaults").
+# Every workload in this namespace declares its own resources; this is the safety net.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: meetings-defaults
+  namespace: meetings
+  labels:
+    app.kubernetes.io/part-of: quorum
+spec:
+  limits:
+    - type: Container
+      default: { cpu: 1500m, memory: 2560Mi }
+      defaultRequest: { cpu: 1000m, memory: 1100Mi }
+      # Largest single container allowed (postgres limit in the chart is 4 CPU / 4Gi).
+      max: { cpu: "4", memory: 6Gi }
+---
+# Gateway ingress: only from hosted-hive namespaces (any namespace carrying the label key
+# hive.kubestellar.io/hive-id) and from `meetings` itself.
+#
+# ENFORCEMENT: hive-oke runs flannel, which does NOT enforce NetworkPolicy. This object documents
+# intent and takes effect only if the CNI changes. The real boundary is the per-tenant Vexa API
+# key (X-API-Key); the gateway Service is ClusterIP only, with no Ingress or LoadBalancer.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: vexa-gateway-ingress
+  namespace: meetings
+  labels:
+    app.kubernetes.io/part-of: quorum
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: vexa
+      app.kubernetes.io/component: gateway
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchExpressions:
+              - key: hive.kubestellar.io/hive-id
+                operator: Exists
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: meetings
+      ports:
+        - protocol: TCP
+          port: 8000

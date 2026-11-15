@@ -1,0 +1,137 @@
+# S3 endpoint for the Vexa chart. The chart requires an existing bucket even with recording off
+# (meeting-api also writes its captured-signal tape there unless the diagnostics kill switch is
+# set, which install.sh sets). versitygw (Apache-2.0) with its POSIX backend on a block volume.
+#
+# Credentials: Secret `vexa-s3` (keys AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY), created by
+# install.sh with random values. The same Secret is the chart's storage.s3.existingSecret and the
+# versitygw root user.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: versitygw-data
+  namespace: meetings
+  labels:
+    app.kubernetes.io/name: versitygw
+    app.kubernetes.io/part-of: quorum
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: oci-bv
+  resources:
+    requests:
+      # 50Gi is the OCI block volume minimum.
+      storage: 50Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: versitygw
+  namespace: meetings
+  labels:
+    app.kubernetes.io/name: versitygw
+    app.kubernetes.io/part-of: quorum
+spec:
+  replicas: 1
+  # RWO volume: never run two pods against it.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: versitygw
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: versitygw
+        app.kubernetes.io/part-of: quorum
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: versitygw
+          # v1.10.0, multi-arch index (linux/amd64, linux/arm64).
+          image: docker.io/versity/versitygw:v1.10.0@sha256:89cad13cc981986ee284cbafea4613f9533ce6fd5f37a2c96c4c4fb8adb3a316
+          args: ["--port", ":7070", "--health", "/health", "--quiet", "posix", "/data"]
+          env:
+            - name: ROOT_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef: { name: vexa-s3, key: AWS_ACCESS_KEY_ID }
+            - name: ROOT_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: { name: vexa-s3, key: AWS_SECRET_ACCESS_KEY }
+          ports:
+            - name: s3
+              containerPort: 7070
+          readinessProbe:
+            httpGet: { path: /health, port: s3 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /health, port: s3 }
+            periodSeconds: 20
+            failureThreshold: 6
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: versitygw-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: versitygw
+  namespace: meetings
+  labels:
+    app.kubernetes.io/name: versitygw
+    app.kubernetes.io/part-of: quorum
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: versitygw
+  ports:
+    - name: s3
+      port: 7070
+      targetPort: s3
+---
+# Creates the bucket the chart names (storage.s3.bucket). An existing bucket is success.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: versitygw-bucket
+  namespace: meetings
+  labels:
+    app.kubernetes.io/name: versitygw-bucket
+    app.kubernetes.io/part-of: quorum
+spec:
+  backoffLimit: 30
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: versitygw-bucket
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      containers:
+        - name: create-bucket
+          image: docker.io/versity/versitygw:v1.10.0@sha256:89cad13cc981986ee284cbafea4613f9533ce6fd5f37a2c96c4c4fb8adb3a316
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              out=$(versitygw admin --endpoint-url http://versitygw:7070 create-bucket \
+                --bucket vexa-meetings --owner "$ADMIN_ACCESS_KEY" 2>&1); rc=$?
+              echo "$out"
+              [ "$rc" -eq 0 ] || echo "$out" | grep -q BucketAlreadyOwnedByYou
+          env:
+            - name: ADMIN_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: { name: vexa-s3, key: AWS_ACCESS_KEY_ID }
+            - name: ADMIN_SECRET_KEY
+              valueFrom:
+                secretKeyRef: { name: vexa-s3, key: AWS_SECRET_ACCESS_KEY }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { cpu: 100m, memory: 128Mi }

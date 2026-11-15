@@ -1,0 +1,11 @@
+# The shared Vexa service for Quorum on hive-oke. Everything Vexa runs lives in this namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: meetings
+  labels:
+    app.kubernetes.io/part-of: quorum
+    # Report (not enforce) Pod Security baseline violations; the spawned bot Pods are created by
+    # the Vexa runtime, so enforcement is left off until they have been observed under it.
+    pod-security.kubernetes.io/warn: baseline
+    pod-security.kubernetes.io/audit: baseline

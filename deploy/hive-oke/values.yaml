@@ -1,0 +1,134 @@
+# Vexa Helm values for the shared Quorum meeting service on hive-oke (namespace `meetings`).
+#
+# Chart: deploy/helm/charts/vexa from hivecommons/vexa at tag v0.12.28 (chart 0.12.2,
+# appVersion 0.12.28). Install with ./install.sh, which also creates the Secrets and applies
+# the namespace policy rendered from the `quorum` block below.
+#
+# All images are pinned to an exact tag AND digest. Control-plane images are upstream
+# vexaai/v012-* v0.12.28 (multi-arch upstream). The bot and the CPU transcription service are
+# built by hivecommons/vexa (.github/workflows/quorum-images.yml) because upstream publishes
+# vexa-bot for amd64 only and no CPU transcription image; hive-oke nodes are all arm64.
+#
+# Upgrading: quorum-images.yml publishes <upstream tag>-quorum.N automatically for each new
+# upstream release. Moving the cluster is a PR here that bumps every pinned tag and digest below
+# (and in transcription.yaml); nothing upgrades the cluster automatically.
+
+# ---- Quorum deployment knobs (read by install.sh, ignored by the chart) ----
+quorum:
+  # Most meeting-bot Pods that may run at once in `meetings`. Enforced twice:
+  #   1. ResourceQuota `meetings-quota`: pods = controlPlanePods + maxConcurrentBots
+  #      (bot Pods are bare Pods the runtime creates, so a quota cannot select only them);
+  #   2. each tenant user's max_concurrent_bots in admin-api (install.sh sets it to this value).
+  # Raising it needs node capacity: each bot is Guaranteed at runtime.workloadResources.meetingBot.
+  maxConcurrentBots: 4
+  # Steady-state non-bot Pods in `meetings`: gateway 2, admin-api 2, meeting-api 2, runtime 1,
+  # postgres 1, redis 1, versitygw 1, transcription 1. While a rollout surges, or an ops Pod
+  # (bucket Job, smoke test) runs, it uses bot slots; a rollout waits for a free slot.
+  controlPlanePods: 11
+  tenant:
+    name: hivecommons-hive
+    hostedHiveId: hosted-available-oke-11-placeholder-r05x
+
+fullnameOverride: vexa
+
+global:
+  imagePullPolicy: IfNotPresent
+
+# Secret `vexa-admin` is created by install.sh with random values (never in git). Keys:
+# ADMIN_API_TOKEN, INTERNAL_API_SECRET, TRANSCRIPTION_SERVICE_TOKEN, VEXA_DISPATCH_SIGNING_KEY,
+# NEXTAUTH_SECRET, VEXA_SERVICE_AUTHORITY_SECRET, VEXA_SYSTEM_WEBHOOK_SECRET.
+secrets:
+  existingSecretName: vexa-admin
+
+# In-namespace versitygw (versitygw.yaml). Bucket created by the versitygw-bucket Job.
+storage:
+  s3:
+    endpoint: http://versitygw:7070
+    bucket: vexa-meetings
+    region: us-east-1
+    forcePathStyle: true
+    existingSecret: vexa-s3
+
+gateway:
+  replicaCount: 2
+  image:
+    repository: docker.io/vexaai/v012-gateway
+    tag: v0.12.28@sha256:2e76319812f28adbb6bc328ac0a7484d3826924a9d38a9dd9599dd190fbb0f19
+  service:
+    type: ClusterIP
+
+adminApi:
+  replicaCount: 2
+  image:
+    repository: docker.io/vexaai/v012-admin-api
+    tag: v0.12.28@sha256:4c702354384eafe3a933cd537a106b7c15067cfd368a5f6da1a6e675e7e03e04
+
+meetingApi:
+  replicaCount: 2
+  image:
+    repository: docker.io/vexaai/v012-meeting-api
+    tag: v0.12.28@sha256:cca46266feedcff29c3478472fd40133ba51f3c49a489a290040a56f1f0f3dca
+  # Participants see this name; it says the bot takes notes (RFC: behaviour in the meeting).
+  defaultBotName: "Hive notes (AI notetaker)"
+  transcriptionServiceUrl: http://vexa-transcription:8000
+  extraEnv:
+    # No audio or video recording unless a request explicitly asks for it.
+    - name: RECORDING_ENABLED
+      value: "false"
+
+runtime:
+  backend: k8s
+  replicaCount: 1
+  image:
+    repository: docker.io/vexaai/v012-runtime
+    tag: v0.12.28@sha256:a1f6448fbb380b9433364e8b572ec25a12aa4f274bf403f1d83a89cbf5812f2d
+  # v0.12.28-quorum.1, multi-arch, built from upstream v0.12.28 by hivecommons/vexa.
+  browserImage: ghcr.io/hivecommons/vexa-bot:v0.12.28-quorum.1@sha256:0c7e1923770d072b6c5d3003bf591e23c8f667a5a6dfd0051d537b14fd5c1898
+  # Agent workers are not used by Quorum (agentApi is off); pinned anyway so nothing is mutable.
+  agentImage: docker.io/vexaai/v012-agent-api:v0.12.28@sha256:6eb37574b33aab233aabbe5907e06e106bae44a403e5df781a436da8201a928d
+  agentWorkerImage: docker.io/vexaai/v012-agent-worker:v0.12.28@sha256:a1120b24765ff6b1c86c5f9ddee35b5e71fdbb9543a23b918b278373ad705022
+  # Each spawned bot Pod: Guaranteed QoS, request == limit. Sizing per upstream production
+  # guidance (deploy docs: ~1.0-1.3Gi steady, Teams spikes past 2Gi; do not go below 2560Mi).
+  workloadResources:
+    meetingBot:
+      cpu: 1
+      memoryMb: 2560
+    agentWorker:
+      cpu: 0.5
+      memoryMb: 1024
+  # Spawned bot Pods schedule on arm64 nodes (every hive-oke node today).
+  nodeSelector:
+    kubernetes.io/arch: arm64
+
+# Not needed by Quorum: no agent dispatch, no web UI (and no model credentials in this namespace).
+agentApi:
+  enabled: false
+terminal:
+  enabled: false
+dashboard:
+  enabled: false
+
+podDisruptionBudgets:
+  terminal:
+    enabled: false
+  agentApi:
+    enabled: false
+
+postgres:
+  enabled: true
+  image: docker.io/library/postgres:17.11-alpine@sha256:e5d2edd28b1f8d40a0a6c0c9cdc545b19b56a0d5d88f94bc11a97d970d4700d0
+  persistence:
+    enabled: true
+    size: 50Gi
+    storageClassName: oci-bv
+
+redis:
+  enabled: true
+  image: docker.io/valkey/valkey:8.1.11-alpine@sha256:2602ace2be6569bc2bbb06f873776516ab9089821525be34f4305c67eb9db02a
+  persistence:
+    enabled: true
+    size: 50Gi
+    storageClassName: oci-bv
+
+ingress:
+  enabled: false
