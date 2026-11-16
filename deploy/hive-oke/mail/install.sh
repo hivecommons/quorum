@@ -6,7 +6,8 @@
 #
 # The bearer token hive-mx shows the hub is generated once into Secret mail/hive-mx-hub-token
 # and never printed. With --hub-secret the same value is also written as key `mail-token` of
-# Secret hive-hub/hive-hub-secrets (the only change this script makes outside `mail`); the hub
+# Secret hive-hub/hive-hub-secrets (with the tls-sync Role and RoleBinding in hive-hub, the only
+# changes this script makes outside `mail`); the hub
 # reads it as HIVE_HUB_MAIL_TOKEN once its Deployment references that key and has rolled out,
 # which is an operator step (README.md, "Hub").
 set -euo pipefail
@@ -40,6 +41,17 @@ if [ "$hub_secret" = true ]; then
 fi
 
 k apply -f "$here/policy.yaml"
+
+# STARTTLS certificate copy (README.md, "STARTTLS"). Its Role and RoleBinding in hive-hub are
+# the only other objects outside `mail`. Seed the copy once so the Deployment can mount it.
+k apply -f "$here/tls-sync.yaml"
+if ! k -n mail get secret hive-mx-tls >/dev/null 2>&1; then
+  job="hive-mx-tls-seed-$(date +%s)"
+  k -n mail create job --from=cronjob/hive-mx-tls-sync "$job" >/dev/null
+  k -n mail wait --for=condition=complete "job/$job" --timeout=180s
+  k -n mail logs "job/$job"
+fi
+
 k apply -f "$here/hive-mx.yaml"
 k -n mail rollout status deploy/hive-mx --timeout=180s
 k -n mail get svc hive-mx -o wide

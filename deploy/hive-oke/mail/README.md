@@ -7,13 +7,15 @@ hive's Inbox. One receiver serves every hive on the cluster through a wildcard M
 opens port 25.
 
 hive-mx runs in namespace `mail` and touches nothing else, except one key it can add to the hub's
-Secret (see "Hub" below).
+Secret (see "Hub" below) and one read-only Role and RoleBinding in `hive-hub` for the STARTTLS
+certificate (see "STARTTLS" below).
 
 | File             | What it is                                                                         |
 | ---------------- | ---------------------------------------------------------------------------------- |
 | `namespace.yaml` | Namespace `mail` (Pod Security restricted, enforced)                               |
 | `policy.yaml`    | NetworkPolicy: SMTP in from anywhere; egress only to CoreDNS and the hub Service   |
 | `hive-mx.yaml`   | Deployment (2 replicas), PodDisruptionBudget, Service type LoadBalancer on port 25 |
+| `tls-sync.yaml`  | Hourly CronJob and least-privilege RBAC that copy the wildcard cert for STARTTLS   |
 | `install.sh`     | Idempotent install/upgrade; generates the hub bearer token once, never prints it   |
 
 ## What hive-mx does
@@ -85,11 +87,42 @@ Service's node port from the internet.
 
 ## STARTTLS
 
-hive-mx offers STARTTLS only when a certificate is mounted (`HIVE_MX_TLS_CERT`, `HIVE_MX_TLS_KEY`,
-re-read when the file changes). None is mounted here yet: mail is accepted over plain SMTP, which
-every sender falls back to. To add it, issue a cert-manager Certificate for `mx.hive.hivecommons.dev`
-in namespace `mail` (DNS-01; HTTP-01 does not reach port 25), mount its Secret and set the two
-variables.
+hive-mx offers STARTTLS (TLS 1.2 minimum) with the wildcard certificate `*.hive.hivecommons.dev`,
+which covers `mx.hive.hivecommons.dev`. cert-manager issues it as Certificate `hive-wildcard-tls` in
+namespace `hive-hub`; the cluster has no reflector, so `tls-sync.yaml` copies it:
+
+- CronJob `mail/hive-mx-tls-sync` runs hourly (minute 17) and writes Secret `mail/hive-mx-tls` only
+  when the certificate's SHA-256 differs from the copy's `hive.hivecommons.dev/source-cert-sha256`
+  annotation. It never prints key material.
+- Its ServiceAccount can `get` only Secret `hive-hub/hive-wildcard-tls` (Role and RoleBinding
+  `hive-mx-tls-sync-read` in `hive-hub`, the only objects outside `mail`) and
+  `get`/`create`/`update`/`patch` only Secret `mail/hive-mx-tls` (Role `hive-mx-tls-sync-write`). It
+  writes with server-side apply, so `create` is authorized against that one name.
+- The Deployment mounts `hive-mx-tls` read-only (no `subPath`) and sets `HIVE_MX_TLS_CERT` and
+  `HIVE_MX_TLS_KEY`. hive-mx re-reads the certificate when the file changes and the kubelet refreshes
+  the mounted Secret in place, so a renewal reaches hive-mx within about an hour plus the kubelet sync
+  period, with no rollout. The job has no rights on the Deployment.
+
+`install.sh` applies `tls-sync.yaml` and, when `mail/hive-mx-tls` does not exist yet, seeds it once
+with a Job made from the CronJob. To force a copy by hand:
+
+```sh
+kubectl --context hive-oke -n mail create job --from=cronjob/hive-mx-tls-sync hive-mx-tls-sync-manual
+```
+
+The CronJob image is `docker.io/alpine/kubectl:1.34.2@sha256:96a7d245a74d461925a56e3024d2f027c2a7a822b3e9e0117ec558db42de9c35`
+(kubectl plus busybox; `registry.k8s.io/kubectl` has no shell).
+
+### TLS posture
+
+Decided in hivecommons/hive#18503 (closed as not planned):
+
+- STARTTLS is offered with the wildcard certificate, and it stays opportunistic: a sender that does
+  not use it is still accepted.
+- MTA-STS (and TLS-RPT) is not published, because each hive host is its own mail domain
+  (`hive@<host>`), so a policy would be needed per host.
+- Senders are trusted through SPF, DKIM and aligned DMARC, plus the allowlisted organizer, not
+  through the transport.
 
 ## Check
 

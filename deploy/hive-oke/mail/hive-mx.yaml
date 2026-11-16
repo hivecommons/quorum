@@ -2,7 +2,8 @@
 # hive@<known hive host>, keeps calendar invites, mail-in files and proof codes, and posts
 # them to the hub, which routes each one to its hive. It never sends mail, offers no AUTH and
 # relays nothing. The bearer token for the hub comes from Secret `hive-mx-hub-token`
-# (created by install.sh; the hub holds the same value as HIVE_HUB_MAIL_TOKEN).
+# (created by install.sh; the hub holds the same value as HIVE_HUB_MAIL_TOKEN). The STARTTLS
+# certificate comes from Secret `hive-mx-tls`, kept in sync by tls-sync.yaml.
 #
 # Image: ghcr.io/hivecommons/hive-mx, multi-arch (linux/amd64, linux/arm64), distroless static,
 # uid 65532, pinned by tag and digest.
@@ -65,6 +66,12 @@ spec:
               value: ":2525"
             - name: HIVE_MX_HEALTH_LISTEN
               value: ":8080"
+            # STARTTLS with the wildcard certificate copied by tls-sync.yaml; hive-mx re-reads it
+            # when the file changes, so a renewal needs no restart. TLS 1.2 is the minimum.
+            - name: HIVE_MX_TLS_CERT
+              value: /var/run/secrets/hive-mx-tls/tls.crt
+            - name: HIVE_MX_TLS_KEY
+              value: /var/run/secrets/hive-mx-tls/tls.key
           ports:
             - name: smtp
               containerPort: 2525
@@ -98,10 +105,18 @@ spec:
             - name: hub-token
               mountPath: /var/run/secrets/hive-mx
               readOnly: true
+            - name: tls
+              mountPath: /var/run/secrets/hive-mx-tls
+              readOnly: true
       volumes:
         - name: hub-token
           secret:
             secretName: hive-mx-hub-token
+            defaultMode: 0440
+        # No subPath: the kubelet swaps the files in place on update, which the reloader sees.
+        - name: tls
+          secret:
+            secretName: hive-mx-tls
             defaultMode: 0440
 ---
 apiVersion: policy/v1
