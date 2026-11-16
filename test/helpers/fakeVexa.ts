@@ -139,7 +139,17 @@ export class FakeVexa {
     }
     const path = rec.path.split("?")[0] ?? "";
     if (rec.method === "POST" && path === "/bots") {
-      const b = rec.body as { platform: string; native_meeting_id: string };
+      const b = rec.body as { platform: string; native_meeting_id: string; meeting_url?: string };
+      // Vexa's meeting-api refusal (bot_spawn/router.py): it builds Meet and Teams URLs from the
+      // id, but Zoom and Jitsi need the caller's meeting_url.
+      if ((b.platform === "zoom" || b.platform === "jitsi") && !b.meeting_url) {
+        return {
+          status: 422,
+          body: {
+            detail: `unsupported platform '${b.platform}' without a meeting_url — use google_meet/teams, or provide meeting_url (required for zoom/jitsi)`,
+          },
+        };
+      }
       const row: FakeRow = {
         id: this.nextId++,
         platform: b.platform,

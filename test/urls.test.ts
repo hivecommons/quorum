@@ -130,7 +130,19 @@ describe("parseMeetingUrl: Zoom", () => {
     ["1234567890", "1234567890", undefined],
   ])("%s", (url, id, passcode) => {
     const r = parseMeetingUrl(url);
-    expect(r).toEqual({ platform: "zoom", nativeId: id, ...(passcode ? { passcode } : {}) });
+    expect(r).toEqual({
+      platform: "zoom",
+      nativeId: id,
+      meetingUrl: /^\d+$/.test(url) ? `https://zoom.us/j/${id}` : new URL(url).href,
+      ...(passcode ? { passcode } : {}),
+    });
+  });
+
+  it("always carries an https meeting_url, since Vexa cannot build a Zoom URL from the id", () => {
+    expect(parseMeetingUrl("http://us05web.zoom.us/j/12345678901?pwd=PLACEHOLDER").meetingUrl).toBe(
+      "https://us05web.zoom.us/j/12345678901?pwd=PLACEHOLDER",
+    );
+    expect(parseMeetingUrl("zoom.us/j/1234567890").meetingUrl).toBe("https://zoom.us/j/1234567890");
   });
 
   it.each([

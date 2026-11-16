@@ -14,7 +14,11 @@ export interface ParsedMeeting {
   platform: VexaPlatform;
   nativeId: string;
   passcode?: string;
-  /** The raw URL, sent to Vexa for links whose native id is a hash (legacy Teams). */
+  /**
+   * The join URL sent to Vexa as `meeting_url`: the raw link for legacy Teams (whose native id is
+   * a hash), and the https join link for every Zoom meeting, since Vexa cannot construct a Zoom
+   * URL from the id and refuses a Zoom bot without one.
+   */
   meetingUrl?: string;
   /** The Teams web host for enterprise and government short links. */
   teamsBaseHost?: string;
@@ -59,6 +63,24 @@ function teamsShort(nativeId: string, query: URLSearchParams, host: string): Par
   };
 }
 
+/** The base Vexa's own parser recognises for a Zoom meeting given only by its numeric id. */
+const ZOOM_JOIN_BASE = "https://zoom.us/j/";
+
+/** A Zoom meeting with its join URL forced to https (Vexa's bot joins over TLS only). */
+function zoomMeeting(
+  nativeId: string,
+  url: URL | undefined,
+  passcode: string | undefined,
+): ParsedMeeting {
+  let meetingUrl = ZOOM_JOIN_BASE + nativeId;
+  if (url) {
+    const secure = new URL(url.href);
+    secure.protocol = "https:";
+    meetingUrl = secure.href;
+  }
+  return { platform: "zoom", nativeId, meetingUrl, ...(passcode ? { passcode } : {}) };
+}
+
 function parseUrl(raw: string): URL {
   try {
     return new URL(raw);
@@ -76,7 +98,7 @@ export function parseMeetingUrl(input: string): ParsedMeeting {
     return { platform: "google_meet", nativeId: raw.toLowerCase() };
   }
   if (ZOOM_ID.test(raw)) {
-    return { platform: "zoom", nativeId: raw };
+    return zoomMeeting(raw, undefined, undefined);
   }
 
   const url = parseUrl(/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`);
@@ -146,7 +168,7 @@ export function parseMeetingUrl(input: string): ParsedMeeting {
       throw invalid("Zoom link must look like https://zoom.us/j/<9-11 digit id>");
     }
     const passcode = query.get("pwd") ?? query.get("password") ?? undefined;
-    return { platform: "zoom", nativeId, ...(passcode ? { passcode } : {}) };
+    return zoomMeeting(nativeId, url, passcode);
   }
 
   // Zoom fronted on an organisation's own domain (zoom-lfx.platform.linuxfoundation.org):
@@ -154,7 +176,7 @@ export function parseMeetingUrl(input: string): ParsedMeeting {
   const hosted = ZOOM_HOSTED_PATH.exec(path);
   const hostedPass = query.get("password") ?? query.get("pwd");
   if (hosted?.[1] && hostedPass) {
-    return { platform: "zoom", nativeId: hosted[1], passcode: hostedPass };
+    return zoomMeeting(hosted[1], url, hostedPass);
   }
 
   throw invalid(`unsupported meeting host ${host}; supported: Google Meet, Microsoft Teams, Zoom`);

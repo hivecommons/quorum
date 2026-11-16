@@ -73,8 +73,8 @@ Members can ask for the bot with `/hive join` from a voice channel. Quorum then 
 Each release attaches `quorum.mjs` (one ESM file, Node 22 or later, amd64 and arm64) and `quorum.mjs.sha256`:
 
 ```bash
-curl -fsSLO https://github.com/hivecommons/quorum/releases/download/v0.2.0/quorum.mjs
-curl -fsSLO https://github.com/hivecommons/quorum/releases/download/v0.2.0/quorum.mjs.sha256
+curl -fsSLO https://github.com/hivecommons/quorum/releases/download/v0.2.1/quorum.mjs
+curl -fsSLO https://github.com/hivecommons/quorum/releases/download/v0.2.1/quorum.mjs.sha256
 sha256sum -c quorum.mjs.sha256
 node quorum.mjs version
 ```

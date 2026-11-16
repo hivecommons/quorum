@@ -295,8 +295,37 @@ describe("meeting.join and lifecycle", () => {
       platform: "zoom",
       native_meeting_id: "1234567890",
       passcode: "z",
+      meeting_url: "https://zoom.us/j/1234567890?pwd=z",
     });
     expect(bodies[2]).not.toHaveProperty("voice_agent_enabled");
+  });
+
+  it("sends Vexa the exact Zoom /bots shape, meeting_url included", async () => {
+    const url = "https://us05web.zoom.us/j/81234567890?pwd=PLACEHOLDER";
+    const r = await h.call("meeting.join", { url, display_name: "Betty", voice: true });
+    expect(r).toMatchObject({ ok: true, platform: "zoom", state: "requested" });
+    const body = fake.requests.find((x) => x.path === "/bots" && x.method === "POST")?.body;
+    expect(body).toEqual({
+      platform: "zoom",
+      native_meeting_id: "81234567890",
+      bot_name: "Betty",
+      recording_enabled: false,
+      automatic_leave: { max_wait_for_admission: 90_000 },
+      voice_agent_enabled: true,
+      passcode: "PLACEHOLDER",
+      meeting_url: url,
+    });
+  });
+
+  it("builds the Zoom meeting_url for a bare numeric id", async () => {
+    await h.call("meeting.join", { url: "1234567890", display_name: "H" });
+    const body = fake.requests.find((x) => x.path === "/bots" && x.method === "POST")?.body;
+    expect(body).toMatchObject({
+      platform: "zoom",
+      native_meeting_id: "1234567890",
+      meeting_url: "https://zoom.us/j/1234567890",
+    });
+    expect(body).not.toHaveProperty("passcode");
   });
 
   it.each([
