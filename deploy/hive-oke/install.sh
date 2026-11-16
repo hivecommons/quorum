@@ -76,6 +76,13 @@ if ! has_secret vexa-tts; then
   echo "created secret/vexa-tts"
 fi
 
+# SearXNG secret_key (SEARXNG_SECRET), used only to sign its own cookies/tokens.
+if ! has_secret searxng-secret; then
+  k create secret generic searxng-secret \
+    --from-literal=SEARXNG_SECRET="$(rand "$SECRET_BYTES")" >/dev/null
+  echo "created secret/searxng-secret"
+fi
+
 echo "==> policy: LimitRange, NetworkPolicy, ResourceQuota (pods = $CP_PODS + $MAX_BOTS bots)"
 k apply -f "$HERE/policy.yaml"
 k apply -f - <<EOF
@@ -108,6 +115,10 @@ k rollout status deploy/vexa-transcription --timeout="$ROLLOUT_TIMEOUT"
 echo "==> CPU text-to-speech (Kokoro)"
 k apply -f "$HERE/tts.yaml"
 k rollout status deploy/vexa-tts --timeout="$ROLLOUT_TIMEOUT"
+
+echo "==> web search for hive Betty (SearXNG)"
+k apply -f "$HERE/searxng.yaml"
+k rollout status deploy/searxng --timeout="$ROLLOUT_TIMEOUT"
 
 echo "==> helm release $RELEASE"
 helm --kube-context "$CTX" upgrade --install "$RELEASE" "$VEXA_CHART" -n "$NS" \

@@ -1,0 +1,154 @@
+# Self-hosted web search for hive's Betty (hivecommons/hive#18393): SearXNG
+# (github.com/searxng/searxng, AGPL-3.0), the upstream image 2026.11.15-2d500cb6b (manifest list with
+# linux/amd64, linux/arm64, linux/arm/v7). Hive calls
+#   http://searxng.meetings.svc.cluster.local:8080/search?format=json&q=...
+# ClusterIP only. It is not a public instance, so the bot limiter (which needs valkey) is off.
+# The secret_key comes from Secret `searxng-secret` (SEARXNG_SECRET), created by install.sh.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: searxng-settings
+  namespace: meetings
+  labels:
+    app.kubernetes.io/name: searxng
+    app.kubernetes.io/part-of: quorum
+data:
+  settings.yml: |
+    # Upstream defaults (searx/settings.yml of the pinned tag) with only these engines kept.
+    # A plain query searches category `general` (duckduckgo, brave, wikipedia); github and
+    # stackoverflow are in `it` (add &categories=general,it, or use !gh / !st in q).
+    use_default_settings:
+      engines:
+        keep_only:
+          - duckduckgo
+          - brave
+          - wikipedia
+          - github
+          - stackoverflow
+    general:
+      instance_name: "hive search"
+      enable_metrics: false
+      # Sent in the User-Agent; the wikipedia engine refuses to load without it (Wikimedia
+      # User-Agent policy).
+      contact_url: "https://github.com/hivecommons/quorum"
+    search:
+      safe_search: 0
+      autocomplete: ""
+      formats:
+        - html
+        - json
+    server:
+      # The image serves with granian on GRANIAN_HOST/GRANIAN_PORT (set in the Deployment);
+      # these two only document the same values.
+      port: 8080
+      bind_address: "0.0.0.0"
+      # secret_key is taken from SEARXNG_SECRET.
+      limiter: false
+      public_instance: false
+      image_proxy: false
+      method: "GET"
+    valkey:
+      url: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: searxng
+  namespace: meetings
+  labels:
+    app.kubernetes.io/name: searxng
+    app.kubernetes.io/part-of: quorum
+spec:
+  replicas: 1
+  # Recreate, not RollingUpdate: a surge Pod would take a bot slot in the namespace pod quota.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: searxng
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: searxng
+        app.kubernetes.io/part-of: quorum
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        # The image's `searxng` user.
+        runAsNonRoot: true
+        runAsUser: 977
+        runAsGroup: 977
+        fsGroup: 977
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: searxng
+          # 2026.11.15-2d500cb6b (linux/amd64, linux/arm64, linux/arm/v7)
+          image: docker.io/searxng/searxng:2026.11.15-2d500cb6b@sha256:932f69dca010db9880bddebb2171f05d8e1a25d04a59149ff65409993d680024
+          env:
+            # IPv4 wildcard instead of the image's "::".
+            - name: GRANIAN_HOST
+              value: "0.0.0.0"
+            - name: GRANIAN_PORT
+              value: "8080"
+            # Fewer blocking threads than the image default (4) to match the small CPU limit.
+            - name: GRANIAN_BLOCKING_THREADS
+              value: "2"
+            - name: SEARXNG_SECRET
+              valueFrom:
+                secretKeyRef: { name: searxng-secret, key: SEARXNG_SECRET }
+          ports:
+            - name: http
+              containerPort: 8080
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+            failureThreshold: 24
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 30
+            failureThreshold: 4
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 384Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/searxng
+              readOnly: true
+            - name: cache
+              mountPath: /var/cache/searxng
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: searxng-settings
+        - name: cache
+          emptyDir: { sizeLimit: 256Mi }
+        - name: tmp
+          emptyDir: { sizeLimit: 64Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: searxng
+  namespace: meetings
+  labels:
+    app.kubernetes.io/name: searxng
+    app.kubernetes.io/part-of: quorum
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: searxng
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

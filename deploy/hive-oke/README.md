@@ -11,8 +11,9 @@ Quorum (RFC #1) uses one shared Vexa control plane per cluster. On hive-oke it r
 | `versitygw.yaml`     | In-namespace S3 endpoint (versitygw, POSIX backend on a 50Gi `oci-bv` PVC), bucket Job      |
 | `transcription.yaml` | CPU Whisper (faster-whisper `small`, int8) Deployment and Service                           |
 | `tts.yaml`           | CPU text-to-speech (Kokoro via Kokoro-FastAPI) Deployment, Service, voice-map ConfigMap     |
+| `searxng.yaml`       | SearXNG web search for hive Betty: Deployment, Service `searxng:8080`, settings ConfigMap   |
 | `policy.yaml`        | LimitRange and gateway NetworkPolicy                                                        |
-| `install.sh`         | Idempotent install/upgrade: Secrets, policy, ResourceQuota, storage, STT, TTS, Helm, tenant |
+| `install.sh`         | Idempotent install/upgrade: Secrets, policy, ResourceQuota, storage, STT, TTS, search, Helm |
 | `smoke.sh`           | Smoke test with the tenant key from a throwaway Pod (includes a direct TTS call)            |
 | `smoke_api.py`       | The API half of the smoke test (health, `/ws`, chat, speak), run inside that Pod            |
 
@@ -38,8 +39,9 @@ are on upstream `main`, and upstream publishes control-plane images only for rel
 | redis                                    | `docker.io/valkey/valkey:8.1.11-alpine`                                          |
 | S3                                       | `docker.io/versity/versitygw:v1.10.0`                                            |
 | TTS (not Vexa; upstream image)           | `ghcr.io/remsky/kokoro-fastapi-cpu:v0.10.0`                                      |
+| web search (not Vexa; upstream image)    | `docker.io/searxng/searxng:2026.11.15-2d500cb6b`                                 |
 
-Digests are in `values.yaml`, `transcription.yaml` and `tts.yaml`. Each Vexa image is a manifest
+Digests are in `values.yaml`, `transcription.yaml`, `tts.yaml` and `searxng.yaml`. Each Vexa image is a manifest
 list with linux/amd64 and linux/arm64, built on native runners by `.github/workflows/quorum-images.yml` in
 hivecommons/vexa (`source=main`). Every hive-oke node is arm64. Images must be fully qualified
 (`docker.io/...`, `ghcr.io/...`) because hive-oke runs CRI-O with short-name mode set to
@@ -60,6 +62,8 @@ enforcing.
 - Transcription: `vexa-transcription:8000`, 2-4 CPU / 2-4Gi. It needs `TRANSCRIPTION_SERVICE_TOKEN`.
 - Text-to-speech: `vexa-tts:8880`, 1-2 CPU / 1.5-3Gi (about 1.05Gi resident idle; a short
   sentence takes about 3 s on 2 CPUs). It needs `TTS_API_TOKEN`. See Voice.
+- Web search: `searxng:8080`, 50m-500m CPU / 128-384Mi. Not part of Quorum; it is here for
+  hive's Betty. See SearXNG.
 
 ## Meeting API used by Quorum
 
@@ -115,6 +119,55 @@ names (`alloy`, `nova`, ...) and Kokoro voice ids (`af_heart`, `bm_george`, ...)
 `smoke.sh` checks the TTS directly (24 kHz PCM back for a short sentence, 401 without the key),
 then sends a voice bot (201) and expects `/speak` to answer 409 "not in the meeting".
 
+## SearXNG (web search for Betty)
+
+Hive's Betty (hivecommons/hive#18393) searches the web through a self-hosted
+[SearXNG](https://github.com/searxng/searxng) (AGPL-3.0, run unmodified) instead of a paid search
+API:
+
+```
+GET http://searxng.meetings.svc.cluster.local:8080/search?format=json&q=<query>
+```
+
+- Image: the upstream
+  `docker.io/searxng/searxng:2026.11.15-2d500cb6b@sha256:932f69dca010db9880bddebb2171f05d8e1a25d04a59149ff65409993d680024`
+  (manifest list, linux/amd64 + linux/arm64 + linux/arm/v7). To bump, pick a newer date tag on
+  Docker Hub, pin tag plus index digest (`crane digest`), and check the image's
+  `entrypoint.sh` still serves with granian on `GRANIAN_HOST`/`GRANIAN_PORT` and that
+  `/healthz` still exists in `searx/webapp.py`.
+- `searxng.yaml`: ConfigMap `searxng-settings` (`settings.yml`), Deployment `searxng` (1
+  replica, Recreate, runs as the image's `searxng` user 977, read-only root filesystem with
+  emptyDir `/var/cache/searxng` and `/tmp`, all capabilities dropped, probes on `/healthz`),
+  Service `searxng` (ClusterIP, 8080).
+- Settings: upstream defaults with `engines.keep_only` duckduckgo, brave, wikipedia, github,
+  stackoverflow (the `stackexchange` engine). `search.formats` adds `json`. `limiter`,
+  `public_instance` and `image_proxy` are off: the Service is ClusterIP only, so no valkey is
+  needed. `general.contact_url` is set because the wikipedia engine refuses to load without
+  it. A plain query uses category `general` (duckduckgo, brave, wikipedia); github and
+  stackoverflow answer `&categories=it` (or `!gh` / `!st` in `q`).
+- Secret `searxng-secret` (key `SEARXNG_SECRET`, the `server.secret_key`) is created by
+  `install.sh` with a random value if it does not exist.
+- Startup logs two harmless lines: `/etc/searxng` and `/var/cache/searxng` "not owned by
+  searxng:searxng" (they are `root:searxng`; the ConfigMap is read-only and the cache is group
+  writable), and "X-Forwarded-For nor X-Real-IP header is set!" once (the limiter is off).
+- Pods: it is one of the 13 `controlPlanePods` in the ResourceQuota (16 to 17 Pods when it was
+  added; bot slots stay 4).
+
+Smoke test (2026-11-16, from a throwaway Pod in `meetings`): `q=kubernetes`,
+`q=golang generics`, `q=rust borrow checker` each returned 26 results with title, url and
+content in 0.6-0.9 s; `categories=it` returned 40 (github 30, stackoverflow 10) in 1.1 s.
+From the hive-oke egress address duckduckgo answered CAPTCHA (listed in
+`unresponsive_engines`), so general results came from brave; wikipedia adds infobox
+results rather than list results.
+
+```bash
+kubectl --context hive-oke -n meetings run searxng-smoke --rm -i --restart=Never \
+  --image=docker.io/curlimages/curl:8.23.0@sha256:3fb7e13e5d179a845c97d78204f3f1064d1907037f26a3ebf91710571151fd93 \
+  -- curl -s -m 20 'http://searxng.meetings.svc.cluster.local:8080/search?format=json&q=kubernetes'
+```
+
+The smoke Pod takes a bot slot while it runs.
+
 ## Privacy defaults
 
 - `RECORDING_ENABLED=false`: no audio or video recording unless a request explicitly asks for it.
@@ -127,7 +180,8 @@ then sends a voice bot (201) and expects `/speak` to answer 409 "not in the meet
 ## Limits
 
 - `quorum.maxConcurrentBots: 4` in `values.yaml` is the single source. It is enforced in two places:
-  - ResourceQuota `meetings-quota` sets `pods` = `controlPlanePods` (12, including vexa-tts) + 4.
+  - ResourceQuota `meetings-quota` sets `pods` = `controlPlanePods` (13, including vexa-tts and
+    searxng) + 4.
     A quota cannot select only bot Pods, so while a rollout surges or an ops Pod runs, that Pod uses a bot slot, and
     a rollout waits for a free slot.
   - The tenant user's `max_concurrent_bots` in admin-api, set to the same value.
