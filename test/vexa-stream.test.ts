@@ -105,6 +105,37 @@ describe("VexaStream", () => {
     s.stop();
   });
 
+  it("keeps a socket that answers pings across many ping intervals", async () => {
+    const s = stream({ pingIntervalMs: 20 });
+    let opens = 0;
+    let closes = 0;
+    s.on("open", () => opens++);
+    s.on("close", () => closes++);
+    s.subscribe("zoom", "4");
+    await until(() => opens === 1);
+    // Several ping cycles: without the pong handler the watchdog would terminate after two.
+    await new Promise((r) => setTimeout(r, 150));
+    expect(s.connected).toBe(true);
+    expect(opens).toBe(1);
+    expect(closes).toBe(0);
+    s.stop();
+  });
+
+  it("logs the socket error and keeps retrying when the gateway refuses the connection", async () => {
+    const warnings: string[] = [];
+    const s = stream({
+      baseUrl: "http://127.0.0.1:1",
+      log: { ...silentLogger, warn: (msg) => warnings.push(msg) },
+    });
+    let closes = 0;
+    s.on("close", () => closes++);
+    s.subscribe("zoom", "5");
+    await until(() => closes >= 2);
+    s.stop();
+    expect(warnings.filter((w) => w === "vexa ws error").length).toBeGreaterThanOrEqual(2);
+    expect(s.connected).toBe(false);
+  });
+
   it("does not reconnect after stop", async () => {
     const s = stream();
     s.subscribe("zoom", "3");
