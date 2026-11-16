@@ -54,8 +54,18 @@ await build({
   plugins: [daveyShim],
   legalComments: "eof",
   logLevel: "warning",
+  // CommonJS globals for inlined CJS code. opusscript's asm.js build (Opus decode and encode for
+  // Discord) reads __dirname when it initialises under Node; without it, creating an encoder or
+  // decoder throws a ReferenceError in the ESM bundle.
   banner: {
-    js: "import { createRequire as __quorumCreateRequire } from 'node:module'; const require = __quorumCreateRequire(import.meta.url);",
+    js: [
+      "import { createRequire as __quorumCreateRequire } from 'node:module';",
+      "import { fileURLToPath as __quorumFileURLToPath } from 'node:url';",
+      "import { dirname as __quorumDirname } from 'node:path';",
+      "const require = __quorumCreateRequire(import.meta.url);",
+      "const __filename = __quorumFileURLToPath(import.meta.url);",
+      "const __dirname = __quorumDirname(__filename);",
+    ].join(" "),
   },
 });
 

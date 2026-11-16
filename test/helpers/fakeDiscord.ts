@@ -1,13 +1,17 @@
 import { EventEmitter } from "node:events";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import type { Readable } from "node:stream";
 import type {
+  AudioPlayerLike,
   ChannelLike,
+  ClientOptions,
   ClientLike,
   DiscordRuntime,
   GuildLike,
   InteractionLike,
   MemberLike,
+  MessageLike,
   VoiceConnectionLike,
 } from "../../src/discord/types.js";
 
@@ -54,8 +58,42 @@ export class FakeGuild implements GuildLike {
   };
 }
 
+export const PLAYER_IDLE = "idle";
+
+/** Records each resource it is given; a test finishes a clip with `finish()`. */
+export class FakePlayer extends EventEmitter implements AudioPlayerLike {
+  readonly played: Readable[] = [];
+  stops = 0;
+  playError: Error | undefined;
+  play(resource: unknown): void {
+    if (this.playError) throw this.playError;
+    this.played.push(resource as Readable);
+  }
+  stop(): boolean {
+    this.stops += 1;
+    this.emit(PLAYER_IDLE);
+    return true;
+  }
+  finish(): void {
+    this.emit(PLAYER_IDLE);
+  }
+}
+
+/** Reads every packet of an object-mode resource stream. */
+export async function packets(stream: Readable): Promise<Buffer[]> {
+  const out: Buffer[] = [];
+  for await (const p of stream) out.push(p as Buffer);
+  return out;
+}
+
 export class FakeConnection extends EventEmitter implements VoiceConnectionLike {
   destroyed = false;
+  readonly players: AudioPlayerLike[] = [];
+  joinOpts: { selfMute: boolean } | undefined;
+  subscribe(player: AudioPlayerLike): unknown {
+    this.players.push(player);
+    return {};
+  }
   readonly speaking = new EventEmitter();
   readonly streams = new Map<string, EventEmitter>();
   readonly subscribeOpts: unknown[] = [];
@@ -74,7 +112,11 @@ export class FakeConnection extends EventEmitter implements VoiceConnectionLike 
 }
 
 export class FakeClient extends EventEmitter implements ClientLike {
-  readonly guildMap = new Map<string, FakeGuild>();
+  guildMap = new Map<string, FakeGuild>();
+  user = { id: "424242" };
+  opts: ClientOptions | undefined;
+  /** Act like Discord refusing the MessageContent intent: close 4014 instead of ready. */
+  rejectIntents = false;
   appCommands: unknown[][] = [];
   loginToken: string | undefined;
   destroyed = false;
@@ -103,6 +145,10 @@ export class FakeClient extends EventEmitter implements ClientLike {
   async login(token: string): Promise<unknown> {
     if (this.loginError) throw this.loginError;
     this.loginToken = token;
+    if (this.rejectIntents && this.opts?.messageContent) {
+      setImmediate(() => this.emit("shardDisconnect", { code: 4014 }, 0));
+      return token;
+    }
     setImmediate(() => this.emit("clientReady"));
     return token;
   }
@@ -113,7 +159,11 @@ export class FakeClient extends EventEmitter implements ClientLike {
 
 export interface FakeRuntime extends DiscordRuntime {
   client: FakeClient;
+  clients: FakeClient[];
   connections: FakeConnection[];
+  players: FakePlayer[];
+  encoded: number;
+  encodersFreed: number;
   readyError: boolean;
   recover: boolean;
   decodeError: boolean;
@@ -123,14 +173,29 @@ export function fakeRuntime(): FakeRuntime {
   const client = new FakeClient();
   const rt: FakeRuntime = {
     client,
+    clients: [],
     connections: [],
+    players: [],
+    encoded: 0,
+    encodersFreed: 0,
     readyError: false,
     recover: false,
     decodeError: false,
-    createClient: () => client,
+    // The first client is rt.client; a re-login (intent fallback) gets a fresh one with the same guilds.
+    createClient: (opts) => {
+      const c = rt.clients.length === 0 ? client : new FakeClient();
+      if (c !== client) {
+        c.guildMap = rt.client.guildMap;
+      }
+      c.opts = opts;
+      rt.clients.push(c);
+      rt.client = c;
+      return c;
+    },
     voice: {
-      joinVoiceChannel: () => {
+      joinVoiceChannel: (opts) => {
         const c = new FakeConnection();
+        c.joinOpts = opts;
         rt.connections.push(c);
         return c;
       },
@@ -141,6 +206,13 @@ export function fakeRuntime(): FakeRuntime {
       },
       Status: STATUS,
       AfterSilence: 1,
+      createAudioPlayer: () => {
+        const p = new FakePlayer();
+        rt.players.push(p);
+        return p;
+      },
+      createOpusResource: (stream) => stream,
+      PlayerIdle: PLAYER_IDLE,
     },
     createDecoder: () => ({
       decode: (p: Buffer) => {
@@ -148,6 +220,16 @@ export function fakeRuntime(): FakeRuntime {
         return p;
       },
       delete: () => undefined,
+    }),
+    // Identity "encoder": a packet is the PCM frame itself, so tests can check what was played.
+    createEncoder: () => ({
+      encode: (pcm: Buffer) => {
+        rt.encoded += 1;
+        return Buffer.from(pcm);
+      },
+      delete: () => {
+        rt.encodersFreed += 1;
+      },
     }),
   };
   return rt;
@@ -219,4 +301,64 @@ export class FakeStt {
     this.server?.closeAllConnections();
     await new Promise<void>((r) => this.server?.close(() => r()));
   }
+}
+
+export function message(over: Partial<MessageLike> & { authorId?: string; bot?: boolean } = {}) {
+  const { authorId = "500001", bot = false, ...rest } = over;
+  const m: MessageLike = {
+    channelId: "222222",
+    guildId: "111111",
+    content: "typed hello",
+    createdTimestamp: Date.UTC(2026, 10, 16, 12, 0, 0),
+    webhookId: null,
+    author: { id: authorId, bot, username: "ana", globalName: "Ana G" },
+    member: member(authorId, "Ana"),
+    ...rest,
+  };
+  return m;
+}
+
+export interface TtsReply {
+  status: number;
+  body: Buffer | string;
+  delayMs?: number;
+}
+
+/** A fake Kokoro: answers each POST /v1/audio/speech with the next queued reply. */
+export class FakeTts {
+  requests: { url: string; headers: Record<string, unknown>; body: Record<string, unknown> }[] = [];
+  replies: TtsReply[] = [];
+  /** Replies chosen by the request's `input`, ahead of the queue. */
+  byInput = new Map<string, TtsReply>();
+  private server: Server | undefined;
+  url = "";
+  async start(): Promise<void> {
+    this.server = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+        this.requests.push({ url: req.url ?? "", headers: req.headers, body });
+        const r = this.byInput.get(String(body.input)) ??
+          this.replies.shift() ?? { status: 200, body: pcm24([0, 1000, 2000, 3000]) };
+        setTimeout(() => {
+          res.writeHead(r.status, { "Content-Type": "application/octet-stream" });
+          res.end(r.body);
+        }, r.delayMs ?? 0);
+      });
+    });
+    await new Promise<void>((r) => this.server?.listen(0, "127.0.0.1", r));
+    this.url = `http://127.0.0.1:${(this.server?.address() as AddressInfo).port}`;
+  }
+  async stop(): Promise<void> {
+    this.server?.closeAllConnections();
+    await new Promise<void>((r) => this.server?.close(() => r()));
+  }
+}
+
+/** 24 kHz mono s16le PCM from sample values. */
+export function pcm24(values: number[]): Buffer {
+  const b = Buffer.alloc(values.length * 2);
+  values.forEach((v, i) => b.writeInt16LE(v, i * 2));
+  return b;
 }

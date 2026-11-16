@@ -225,7 +225,12 @@ export class VexaAdapter implements PlatformAdapter {
       );
     }
     try {
-      await this.opts.client.speak(meeting.platform, meeting.nativeId as string, text);
+      await this.opts.client.speak(
+        meeting.platform,
+        meeting.nativeId as string,
+        text,
+        meeting.voiceId,
+      );
     } catch (err) {
       if (
         err instanceof VexaHttpError &&

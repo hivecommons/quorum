@@ -1,9 +1,27 @@
 import OpusScript from "opusscript";
-import { describe, expect, it } from "vitest";
-import { Utterance, encodeWav, toMono16k } from "../src/discord/audio.js";
+import { Readable } from "node:stream";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  OPUS_FRAME_BYTES,
+  OPUS_FRAME_SAMPLES,
+  Utterance,
+  encodeWav,
+  pcmFrames,
+  toMono16k,
+  upsampleToStereo48k,
+} from "../src/discord/audio.js";
+import { isDisallowedIntents } from "../src/discord/adapter.js";
 import { loadDiscordRuntime } from "../src/discord/runtime.js";
 import { Transcriber, transcriptionsUrl } from "../src/discord/transcribe.js";
-import { pcm48 } from "./helpers/fakeDiscord.js";
+import { TtsClient, speechUrl } from "../src/discord/tts.js";
+import { FakeTts, pcm24, pcm48 } from "./helpers/fakeDiscord.js";
+
+function stereo(buf: Buffer): [number, number][] {
+  const out: [number, number][] = [];
+  for (let i = 0; i + 4 <= buf.length; i += 4)
+    out.push([buf.readInt16LE(i), buf.readInt16LE(i + 2)]);
+  return out;
+}
 
 describe("audio", () => {
   it("downmixes 48 kHz stereo to 16 kHz mono by averaging", () => {
@@ -45,6 +63,124 @@ describe("audio", () => {
     expect(u.durationMs).toBe(0);
     u.push(new Int16Array(1600));
     expect(u.take()).toMatchObject({ startMs: 2000, endMs: 2100 });
+  });
+});
+
+describe("upsampleToStereo48k", () => {
+  it("doubles the rate by linear interpolation and duplicates each sample to both channels", () => {
+    const out = upsampleToStereo48k(pcm24([0, 100, -100, 32767]));
+    expect(out.length).toBe(4 * 2 * 4);
+    expect(stereo(out)).toEqual([
+      [0, 0],
+      [50, 50],
+      [100, 100],
+      [0, 0],
+      [-100, -100],
+      [16334, 16334],
+      [32767, 32767],
+      [32767, 32767],
+    ]);
+  });
+
+  it("handles empty input, a trailing odd byte and full-scale values", () => {
+    expect(upsampleToStereo48k(Buffer.alloc(0)).length).toBe(0);
+    const odd = Buffer.concat([pcm24([-32768]), Buffer.from([7])]);
+    expect(stereo(upsampleToStereo48k(odd))).toEqual([
+      [-32768, -32768],
+      [-32768, -32768],
+    ]);
+    // One second at 24 kHz becomes one second at 48 kHz stereo.
+    expect(upsampleToStereo48k(Buffer.alloc(24_000 * 2)).length).toBe(48_000 * 4);
+  });
+});
+
+describe("pcmFrames", () => {
+  it("cuts 20 ms frames and pads the last with silence", () => {
+    expect(OPUS_FRAME_SAMPLES).toBe(960);
+    expect(OPUS_FRAME_BYTES).toBe(3840);
+    const pcm = Buffer.alloc(OPUS_FRAME_BYTES * 2 + 10, 1);
+    const frames = pcmFrames(pcm);
+    expect(frames.map((f) => f.length)).toEqual([3840, 3840, 3840]);
+    expect(frames[2]?.subarray(0, 10).every((b) => b === 1)).toBe(true);
+    expect(frames[2]?.subarray(10).every((b) => b === 0)).toBe(true);
+    expect(pcmFrames(Buffer.alloc(0))).toEqual([]);
+  });
+});
+
+describe("TtsClient", () => {
+  const tts = new FakeTts();
+  beforeAll(() => tts.start());
+  afterAll(() => tts.stop());
+  beforeEach(() => {
+    tts.requests = [];
+    tts.replies = [];
+  });
+
+  it("builds the endpoint URL", () => {
+    expect(speechUrl("http://tts:8880/")).toBe("http://tts:8880/v1/audio/speech");
+    expect(speechUrl("http://tts/v1/audio/speech")).toBe("http://tts/v1/audio/speech");
+  });
+
+  it("asks for pcm with the voice and sends X-API-Key", async () => {
+    const pcm = pcm24([1, 2, 3]);
+    tts.replies.push({ status: 200, body: pcm });
+    const c = new TtsClient({ url: tts.url, token: () => "kokoro-key", timeoutMs: 1000 });
+    expect((await c.synthesize("hello", "af_heart")).equals(pcm)).toBe(true);
+    expect(tts.requests[0]).toMatchObject({
+      url: "/v1/audio/speech",
+      headers: { "x-api-key": "kokoro-key", "content-type": "application/json" },
+      body: { model: "tts-1", input: "hello", voice: "af_heart", response_format: "pcm" },
+    });
+    await new TtsClient({ url: tts.url, token: () => undefined, timeoutMs: 1000 }).synthesize(
+      "x",
+      "bf_emma",
+    );
+    expect(tts.requests[1]?.headers["x-api-key"]).toBeUndefined();
+  });
+
+  it("maps errors, empty audio, timeouts and unreachable services to upstream_error", async () => {
+    const c = new TtsClient({ url: tts.url, token: () => "k", timeoutMs: 200 });
+    tts.replies.push({ status: 401, body: '{"detail":"bad key"}' });
+    await expect(c.synthesize("x", "v")).rejects.toMatchObject({
+      code: "upstream_error",
+      message: expect.stringMatching(/401: .*bad key/),
+    });
+    tts.replies.push({ status: 500, body: "" });
+    await expect(c.synthesize("x", "v")).rejects.toMatchObject({
+      message: "TTS service answered 500",
+    });
+    tts.replies.push({ status: 200, body: Buffer.alloc(0) });
+    await expect(c.synthesize("x", "v")).rejects.toMatchObject({
+      code: "upstream_error",
+      message: expect.stringContaining("no audio"),
+    });
+    tts.replies.push({ status: 200, body: pcm24([1]), delayMs: 1000 });
+    await expect(c.synthesize("x", "v")).rejects.toMatchObject({
+      code: "upstream_error",
+      message: expect.stringContaining("unreachable or timed out"),
+    });
+    const down = new TtsClient({
+      url: "http://tts",
+      token: () => undefined,
+      timeoutMs: 100,
+      fetchImpl: (async () => {
+        throw new TypeError("fetch failed");
+      }) as unknown as typeof fetch,
+    });
+    await expect(down.synthesize("x", "v")).rejects.toMatchObject({ code: "upstream_error" });
+  });
+});
+
+describe("isDisallowedIntents", () => {
+  it("recognises Discord refusing a privileged intent", () => {
+    expect(isDisallowedIntents(new Error("Used disallowed intents"))).toBe(true);
+    expect(
+      isDisallowedIntents(new Error("Privileged intent provided is not enabled or whitelisted.")),
+    ).toBe(true);
+    expect(isDisallowedIntents({ code: 4014 })).toBe(true);
+    expect(isDisallowedIntents({ code: "DisallowedIntents" })).toBe(true);
+    expect(isDisallowedIntents(new Error("TOKEN_INVALID"))).toBe(false);
+    expect(isDisallowedIntents(null)).toBe(false);
   });
 });
 
@@ -120,8 +256,25 @@ describe("loadDiscordRuntime", () => {
     const out = dec.decode(packet);
     expect(out.length).toBe(960 * 4);
     dec.delete?.();
-    const client = rt.createClient();
+    const client = rt.createClient({ messageContent: true });
     await client.destroy();
+    await rt.createClient({ messageContent: false }).destroy();
+  });
+
+  it("encodes speech with the pure-JS Opus encoder and plays it as an Opus resource", async () => {
+    const rt = await loadDiscordRuntime();
+    expect(rt.voice.PlayerIdle).toBe("idle");
+    const enc = rt.createEncoder();
+    const packet = enc.encode(pcm48(20, 3000), OPUS_FRAME_SAMPLES);
+    enc.delete?.();
+    expect(packet.length).toBeGreaterThan(0);
+    const dec = rt.createDecoder();
+    expect(dec.decode(packet).length).toBe(OPUS_FRAME_BYTES);
+    dec.delete?.();
+    const player = rt.voice.createAudioPlayer();
+    const resource = rt.voice.createOpusResource(Readable.from([packet], { objectMode: true }));
+    expect(resource).toBeDefined();
+    player.stop(true);
   });
 
   it("joinVoiceChannel goes through @discordjs/voice", async () => {

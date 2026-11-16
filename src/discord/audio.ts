@@ -1,6 +1,8 @@
 /**
- * PCM helpers for Discord voice receive. Discord sends 48 kHz stereo Opus; Whisper wants 16 kHz
- * mono. Decoded frames are downmixed and decimated by 3, then wrapped as a 16-bit PCM WAV file.
+ * PCM helpers for Discord voice. Receive: Discord sends 48 kHz stereo Opus; Whisper wants 16 kHz
+ * mono, so decoded frames are downmixed and decimated by 3, then wrapped as a 16-bit PCM WAV file.
+ * Send: Kokoro answers 24 kHz mono, which is upsampled by 2 to 48 kHz stereo and cut into 20 ms
+ * frames for the Opus encoder.
  */
 
 export const DISCORD_SAMPLE_RATE = 48_000;
@@ -10,6 +12,12 @@ const DECIMATION = DISCORD_SAMPLE_RATE / STT_SAMPLE_RATE;
 const BYTES_PER_SAMPLE = 2;
 const WAV_HEADER_BYTES = 44;
 const MS_PER_S = 1000;
+export const TTS_SAMPLE_RATE = 24_000;
+const UPSAMPLING = DISCORD_SAMPLE_RATE / TTS_SAMPLE_RATE;
+/** Discord plays 20 ms Opus frames: 960 samples per channel at 48 kHz. */
+export const OPUS_FRAME_MS = 20;
+export const OPUS_FRAME_SAMPLES = (DISCORD_SAMPLE_RATE * OPUS_FRAME_MS) / MS_PER_S;
+export const OPUS_FRAME_BYTES = OPUS_FRAME_SAMPLES * DISCORD_CHANNELS * BYTES_PER_SAMPLE;
 
 /** 48 kHz interleaved stereo s16le to 16 kHz mono, averaging each 3-frame block of both channels. */
 export function toMono16k(pcm: Buffer): Int16Array {
@@ -24,6 +32,44 @@ export function toMono16k(pcm: Buffer): Int16Array {
     out[i] = Math.round(sum / (DECIMATION * DISCORD_CHANNELS));
   }
   return out;
+}
+
+/**
+ * 24 kHz mono s16le to 48 kHz interleaved stereo s16le. Each input sample is followed by the
+ * midpoint to the next one (linear interpolation; the last sample repeats), and every output
+ * sample is written to both channels. A trailing odd byte is ignored.
+ */
+export function upsampleToStereo48k(pcm: Buffer): Buffer {
+  const samples = Math.floor(pcm.length / BYTES_PER_SAMPLE);
+  const frameBytes = DISCORD_CHANNELS * BYTES_PER_SAMPLE;
+  const out = Buffer.alloc(samples * UPSAMPLING * frameBytes);
+  for (let i = 0; i < samples; i++) {
+    const cur = pcm.readInt16LE(i * BYTES_PER_SAMPLE);
+    const next = i + 1 < samples ? pcm.readInt16LE((i + 1) * BYTES_PER_SAMPLE) : cur;
+    for (let k = 0; k < UPSAMPLING; k++) {
+      const v = Math.round(cur + ((next - cur) * k) / UPSAMPLING);
+      const at = (i * UPSAMPLING + k) * frameBytes;
+      out.writeInt16LE(v, at);
+      out.writeInt16LE(v, at + BYTES_PER_SAMPLE);
+    }
+  }
+  return out;
+}
+
+/** Splits 48 kHz stereo PCM into 20 ms frames, padding the last one with silence. */
+export function pcmFrames(pcm: Buffer): Buffer[] {
+  const frames: Buffer[] = [];
+  for (let at = 0; at < pcm.length; at += OPUS_FRAME_BYTES) {
+    const chunk = pcm.subarray(at, at + OPUS_FRAME_BYTES);
+    if (chunk.length === OPUS_FRAME_BYTES) {
+      frames.push(chunk);
+    } else {
+      const padded = Buffer.alloc(OPUS_FRAME_BYTES);
+      chunk.copy(padded);
+      frames.push(padded);
+    }
+  }
+  return frames;
 }
 
 export function encodeWav(samples: Int16Array, sampleRate = STT_SAMPLE_RATE): Buffer {

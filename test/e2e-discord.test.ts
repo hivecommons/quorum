@@ -8,12 +8,18 @@ import {
   FakeChannel,
   FakeGuild,
   FakeStt,
+  FakeTts,
   fakeRuntime,
   interaction,
   member,
+  message,
+  packets,
+  pcm24,
   pcm48,
+  type FakePlayer,
   type FakeRuntime,
 } from "./helpers/fakeDiscord.js";
+import { pcmFrames, upsampleToStereo48k } from "../src/discord/audio.js";
 import {
   openSse,
   startHarness,
@@ -26,13 +32,20 @@ import {
 const GUILD = "111111";
 const CHANNEL = "222222";
 const stt = new FakeStt();
+const tts = new FakeTts();
 let rt: FakeRuntime;
 let h: Harness | undefined;
 let guild: FakeGuild;
 let channel: FakeChannel;
 
-beforeAll(() => stt.start());
-afterAll(() => stt.stop());
+beforeAll(async () => {
+  await stt.start();
+  await tts.start();
+});
+afterAll(async () => {
+  await stt.stop();
+  await tts.stop();
+});
 
 async function boot(env: Record<string, string> = {}): Promise<void> {
   rt = fakeRuntime();
@@ -61,6 +74,9 @@ async function boot(env: Record<string, string> = {}): Promise<void> {
 beforeEach(() => {
   stt.bodies = [];
   stt.replies = [];
+  tts.requests = [];
+  tts.replies = [];
+  tts.byInput.clear();
 });
 afterEach(async () => {
   await h?.close();
@@ -72,11 +88,12 @@ function H(): Harness {
   return h;
 }
 
-async function joinDiscord(): Promise<string> {
+async function joinDiscord(extra: Record<string, unknown> = {}): Promise<string> {
   const r = await H().call("meeting.join", {
     platform: "discord",
     guild_id: GUILD,
     channel_id: CHANNEL,
+    ...extra,
   });
   expect(r).toMatchObject({ ok: true, platform: "discord", state: "live" });
   return r.meeting_id as string;
@@ -277,6 +294,210 @@ describe("Discord voice", () => {
         message: expect.stringContaining("QUORUM_TRANSCRIBE_URL"),
       },
     });
+  });
+});
+
+function ttsEnv(): Record<string, string> {
+  return {
+    QUORUM_TTS_URL: tts.url,
+    QUORUM_TTS_TOKEN_FILE: writeSecret(tempDir(), "tts", "kokoro-key"),
+  };
+}
+
+function player(i = 0): FakePlayer {
+  const p = rt.players[i];
+  if (!p) throw new Error("no player");
+  return p;
+}
+
+describe("Discord speech", () => {
+  it("joins unmuted, synthesizes with Kokoro and plays 48 kHz stereo Opus frames", async () => {
+    await boot(ttsEnv());
+    const id = await joinDiscord();
+    const conn = rt.connections[0];
+    expect(conn?.joinOpts?.selfMute).toBe(false);
+    expect(conn?.players).toEqual([player()]);
+    const pcm = pcm24(Array.from({ length: 600 }, (_, i) => i));
+    tts.replies.push({ status: 200, body: pcm });
+    expect(await H().call("say", { meeting_id: id, text: "Hello, I am Betty." })).toEqual({
+      ok: true,
+      queued: true,
+    });
+    expect(tts.requests[0]).toMatchObject({
+      url: "/v1/audio/speech",
+      headers: { "x-api-key": "kokoro-key" },
+      body: { input: "Hello, I am Betty.", voice: "af_heart", response_format: "pcm" },
+    });
+    await until(() => player().played.length === 1);
+    const got = await packets(player().played[0] as never);
+    const want = pcmFrames(upsampleToStereo48k(pcm));
+    expect(got.length).toBe(want.length);
+    expect(Buffer.concat(got).equals(Buffer.concat(want))).toBe(true);
+    expect(rt.encodersFreed).toBe(1);
+    player().finish();
+  });
+
+  it("plays clips in say order even when a later one synthesizes first, and skips failures", async () => {
+    await boot(ttsEnv());
+    const id = await joinDiscord({ voice_id: "bf_emma" });
+    tts.byInput.set("first", { status: 200, body: pcm24([1, 1]), delayMs: 150 });
+    tts.byInput.set("second", { status: 200, body: pcm24([2, 2]) });
+    tts.byInput.set("broken", { status: 503, body: "kokoro is down" });
+    tts.byInput.set("third", { status: 200, body: pcm24([3, 3]) });
+    const first = H().call("say", { meeting_id: id, text: "first" });
+    await until(() => tts.requests.length === 1);
+    const second = H().call("say", { meeting_id: id, text: "second" });
+    expect(await second).toMatchObject({ ok: true });
+    expect(player().played).toHaveLength(0);
+    expect(await first).toMatchObject({ ok: true });
+    expect(await H().call("say", { meeting_id: id, text: "broken" })).toMatchObject({
+      ok: false,
+      error: { code: "upstream_error", message: expect.stringContaining("503") },
+    });
+    expect(await H().call("say", { meeting_id: id, text: "third" })).toMatchObject({ ok: true });
+    expect(tts.requests.map((r) => r.body.voice)).toEqual([
+      "bf_emma",
+      "bf_emma",
+      "bf_emma",
+      "bf_emma",
+    ]);
+
+    const firstSample = async (i: number): Promise<number> =>
+      Buffer.concat(await packets(player().played[i] as never)).readInt16LE(0);
+    await until(() => player().played.length === 1);
+    expect(await firstSample(0)).toBe(1);
+    player().finish();
+    await until(() => player().played.length === 2);
+    expect(await firstSample(1)).toBe(2);
+    player().finish();
+    await until(() => player().played.length === 3);
+    expect(await firstSample(2)).toBe(3);
+    player().finish();
+  });
+
+  it("stops speech on leave, survives a playback error, and enforces the text cap", async () => {
+    await boot({ ...ttsEnv(), QUORUM_SAY_MAX_CHARS: "10" });
+    const id = await joinDiscord();
+    expect(await H().call("say", { meeting_id: id, text: "x".repeat(11) })).toMatchObject({
+      error: { code: "invalid_argument" },
+    });
+    expect(tts.requests).toHaveLength(0);
+    player().playError = new Error("player broke");
+    expect(await H().call("say", { meeting_id: id, text: "oops" })).toMatchObject({ ok: true });
+    await new Promise((r) => setTimeout(r, 20));
+    player().playError = undefined;
+    expect(await H().call("say", { meeting_id: id, text: "again" })).toMatchObject({ ok: true });
+    await until(() => player().played.length === 1);
+    player().emit("error", new Error("resource ended early"));
+    expect(await H().call("meeting.leave", { meeting_id: id })).toMatchObject({ ok: true });
+    expect(player().stops).toBeGreaterThanOrEqual(1);
+    expect(await H().call("say", { meeting_id: id, text: "late" })).toMatchObject({
+      error: { code: "not_live" },
+    });
+  });
+
+  it("stays muted and answers platform_unavailable without QUORUM_TTS_URL", async () => {
+    await boot();
+    const id = await joinDiscord();
+    expect(rt.connections[0]?.joinOpts?.selfMute).toBe(true);
+    expect(rt.players).toHaveLength(0);
+    expect(await H().call("say", { meeting_id: id, text: "x" })).toMatchObject({
+      error: { code: "platform_unavailable", message: expect.stringContaining("QUORUM_TTS_URL") },
+    });
+  });
+});
+
+describe("Discord typed chat", () => {
+  it("emits chat events for people typing in the voice channel's text chat only", async () => {
+    await boot();
+    expect(rt.client.opts).toEqual({ messageContent: true });
+    const id = await joinDiscord();
+    const sse = await openSse(`${H().q.url}/events?meeting_id=${id}`);
+    rt.client.emit("messageCreate", message({ content: "  can hive take notes?  " }));
+    rt.client.emit("messageCreate", message({ channelId: "333333", content: "other channel" }));
+    rt.client.emit("messageCreate", message({ guildId: "999999", content: "other guild" }));
+    rt.client.emit("messageCreate", message({ bot: true, authorId: "500009", content: "a bot" }));
+    rt.client.emit("messageCreate", message({ authorId: "424242", content: "ourselves" }));
+    rt.client.emit("messageCreate", message({ webhookId: "77777", content: "a webhook" }));
+    rt.client.emit("messageCreate", message({ content: "   " }));
+    rt.client.emit(
+      "messageCreate",
+      message({ authorId: "500077", member: null, content: "no member" }),
+    );
+    await sse.waitFor((e) => e.filter((x) => x.type === "chat").length === 2);
+    await new Promise((r) => setTimeout(r, 20));
+    const chats = sse.events.filter((e) => e.type === "chat");
+    expect(chats).toEqual([
+      {
+        type: "chat",
+        meeting_id: id,
+        seq: 1,
+        author: { id: "500001", name: "Ana" },
+        text: "can hive take notes?",
+        at: "2026-11-16T12:00:00.000Z",
+      },
+      expect.objectContaining({
+        seq: 2,
+        author: { id: "500077", name: "Ana G" },
+        text: "no member",
+      }),
+    ]);
+    sse.close();
+    await H().call("meeting.leave", { meeting_id: id });
+    rt.client.emit("messageCreate", message({ content: "after leave" }));
+  });
+
+  it("logs in again without MessageContent when Discord refuses the intent, keeping voice", async () => {
+    const lines: string[] = [];
+    const r0 = fakeRuntime();
+    r0.client.rejectIntents = true;
+    const a = new DiscordAdapter({
+      runtime: r0,
+      registry: new Registry(1000),
+      log: createLogger("debug", (l) => lines.push(l)),
+      config: loadConfig({ QUORUM_DISCORD_COMMANDS: "off" }),
+      transcriber: undefined,
+    });
+    await a.start("t");
+    expect(a.isReady).toBe(true);
+    expect(r0.clients.map((c) => c.opts)).toEqual([
+      { messageContent: true },
+      { messageContent: false },
+    ]);
+    expect(r0.clients[0]?.destroyed).toBe(true);
+    expect(lines.filter((l) => l.includes("MessageContent intent is not enabled"))).toHaveLength(1);
+    await a.close();
+    expect(r0.clients[1]?.destroyed).toBe(true);
+
+    const r1 = fakeRuntime();
+    r1.client.loginError = new Error("Used disallowed intents");
+    const b = new DiscordAdapter({
+      runtime: r1,
+      registry: new Registry(1000),
+      log: silentLogger,
+      config: loadConfig({ QUORUM_DISCORD_COMMANDS: "off" }),
+      transcriber: undefined,
+    });
+    // The first client rejects login outright; the replacement (a fresh FakeClient) logs in.
+    await b.start("t");
+    expect(b.isReady).toBe(true);
+    expect(r1.clients.map((c) => c.opts)).toEqual([
+      { messageContent: true },
+      { messageContent: false },
+    ]);
+  });
+
+  it("still fails on other login errors", async () => {
+    const r0 = fakeRuntime();
+    r0.client.loginError = new Error("TOKEN_INVALID");
+    const a = new DiscordAdapter({
+      runtime: r0,
+      registry: new Registry(1000),
+      log: silentLogger,
+      config: loadConfig({}),
+      transcriber: undefined,
+    });
+    await expect(a.start("t")).rejects.toThrow("TOKEN_INVALID");
   });
 });
 

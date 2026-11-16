@@ -3,14 +3,26 @@ import type { Config } from "../config.js";
 import { QuorumError } from "../errors.js";
 import type { Logger } from "../log.js";
 import { Meeting, type Person, type Registry } from "../meeting.js";
-import { encodeWav, toMono16k, Utterance } from "./audio.js";
+import { Readable } from "node:stream";
+import {
+  encodeWav,
+  OPUS_FRAME_MS,
+  OPUS_FRAME_SAMPLES,
+  pcmFrames,
+  toMono16k,
+  upsampleToStereo48k,
+  Utterance,
+} from "./audio.js";
 import type { Transcriber } from "./transcribe.js";
+import type { TtsClient } from "./tts.js";
 import type {
+  AudioPlayerLike,
   ChannelLike,
   ClientLike,
   DiscordRuntime,
   GuildLike,
   InteractionLike,
+  MessageLike,
   VoiceConnectionLike,
   VoiceStateLike,
 } from "./types.js";
@@ -18,7 +30,9 @@ import type {
 /**
  * Discord voice through `@discordjs/voice` (DAVE end-to-end encryption via @snazzah/davey).
  * Each speaking user's Opus stream is decoded, cut at silence, sent to the shared Whisper
- * service and emitted as a final segment attributed to that Discord user.
+ * service and emitted as a final segment attributed to that Discord user. Typed lines in the voice
+ * channel's built-in text chat become chat events; `say` is synthesized by the shared Kokoro TTS
+ * service and played into the channel, one clip after another.
  */
 
 const MS_PER_S = 1000;
@@ -26,6 +40,10 @@ const MS_PER_S = 1000;
 const EPHEMERAL = 64;
 /** How long a dropped voice connection may take to recover before the meeting ends. */
 const RECONNECT_GRACE_MS = 5000;
+/** Extra time a clip may take past its own length before the queue moves on regardless. */
+const PLAYBACK_GRACE_MS = 5000;
+/** Gateway close code for a privileged intent the application has not enabled. */
+const DISALLOWED_INTENTS_CLOSE = 4014;
 
 export const HIVE_COMMAND = {
   name: "hive",
@@ -42,6 +60,11 @@ interface Live {
   joinedAt: number;
   listening: Set<string>;
   names: Map<string, string>;
+  /** Present when QUORUM_TTS_URL is set: plays queued speech into the channel. */
+  player: AudioPlayerLike | undefined;
+  /** Clips in `say` order; each resolves to 48 kHz stereo PCM, or undefined if synthesis failed. */
+  clips: Promise<Buffer | undefined>[];
+  playing: boolean;
 }
 
 export interface DiscordAdapterOptions {
@@ -50,7 +73,21 @@ export interface DiscordAdapterOptions {
   log: Logger;
   config: Config;
   transcriber: Transcriber | undefined;
+  tts?: TtsClient | undefined;
   now?: () => number;
+}
+
+class DisallowedIntentsError extends Error {}
+
+/** Whether a login failure means Discord refused the privileged MessageContent intent. */
+export function isDisallowedIntents(err: unknown): boolean {
+  if (err instanceof DisallowedIntentsError) return true;
+  const e = err as { code?: unknown; message?: unknown } | null;
+  return (
+    e?.code === DISALLOWED_INTENTS_CLOSE ||
+    e?.code === "DisallowedIntents" ||
+    /disallowed intents|privileged intent/i.test(String(e?.message ?? ""))
+  );
 }
 
 function nameOf(
@@ -62,14 +99,14 @@ function nameOf(
 }
 
 export class DiscordAdapter implements PlatformAdapter {
-  private readonly client: ClientLike;
+  private client: ClientLike;
   private readonly live = new Map<string, Live>();
   private readonly requestTimers = new Map<string, NodeJS.Timeout>();
   private ready = false;
   private readonly now: () => number;
 
   constructor(private readonly opts: DiscordAdapterOptions) {
-    this.client = opts.runtime.createClient();
+    this.client = opts.runtime.createClient({ messageContent: true });
     this.now = opts.now ?? Date.now;
   }
 
@@ -77,25 +114,50 @@ export class DiscordAdapter implements PlatformAdapter {
     return this.ready;
   }
 
-  /** Logs in and registers the /hive command. Resolves once the client is ready. */
+  /**
+   * Logs in and registers the /hive command. Resolves once the client is ready. Typed chat needs
+   * the privileged MessageContent intent; when Discord refuses it, quorum logs that once and logs
+   * in again without it, so voice keeps working and only typed chat is lost.
+   */
   async start(token: string): Promise<void> {
-    this.client.on("interactionCreate", (i: InteractionLike) => {
+    try {
+      await this.connect(token);
+    } catch (err) {
+      if (!isDisallowedIntents(err)) throw err;
+      this.opts.log.warn(
+        "discord: the MessageContent intent is not enabled for this bot; typed chat is off. " +
+          "Enable it under Bot > Privileged Gateway Intents in the Discord developer portal.",
+      );
+      await this.client.destroy();
+      this.client = this.opts.runtime.createClient({ messageContent: false });
+      await this.connect(token);
+    }
+    this.ready = true;
+    await this.registerCommands();
+    this.opts.log.info("discord connected", { guilds: this.client.guilds.cache.size });
+  }
+
+  private connect(token: string): Promise<void> {
+    const client = this.client;
+    client.on("interactionCreate", (i: InteractionLike) => {
       void this.onInteraction(i).catch((err: unknown) =>
         this.opts.log.warn("discord: interaction failed", { error: String(err) }),
       );
     });
-    this.client.on("voiceStateUpdate", (a: VoiceStateLike, b: VoiceStateLike) =>
+    client.on("voiceStateUpdate", (a: VoiceStateLike, b: VoiceStateLike) =>
       this.onVoiceState(a, b),
     );
-    this.client.on("guildCreate", (g: GuildLike) => void this.registerGuild(g));
-    const ready = new Promise<void>((resolve) => {
-      this.client.once("clientReady", () => resolve());
+    client.on("guildCreate", (g: GuildLike) => void this.registerGuild(g));
+    client.on("messageCreate", (m: MessageLike) => this.onMessage(m));
+    return new Promise<void>((resolve, reject) => {
+      client.once("clientReady", () => resolve());
+      client.once("shardDisconnect", (ev: { code?: number } | undefined) => {
+        if (ev?.code === DISALLOWED_INTENTS_CLOSE) {
+          reject(new DisallowedIntentsError("Used disallowed intents"));
+        }
+      });
+      client.login(token).catch(reject);
     });
-    await this.client.login(token);
-    await ready;
-    this.ready = true;
-    await this.registerCommands();
-    this.opts.log.info("discord connected", { guilds: this.client.guilds.cache.size });
   }
 
   private async registerCommands(): Promise<void> {
@@ -129,6 +191,7 @@ export class DiscordAdapter implements PlatformAdapter {
     for (const t of this.requestTimers.values()) clearTimeout(t);
     this.requestTimers.clear();
     for (const [id, l] of this.live) {
+      this.stopSpeech(l);
       l.connection.destroy();
       this.opts.registry.get(id)?.setState("ended", "shutdown");
     }
@@ -177,7 +240,7 @@ export class DiscordAdapter implements PlatformAdapter {
       channelId,
       adapterCreator: guild.voiceAdapterCreator,
       selfDeaf: false,
-      selfMute: true,
+      selfMute: !this.opts.tts,
     });
     try {
       await voice.entersState(
@@ -195,7 +258,18 @@ export class DiscordAdapter implements PlatformAdapter {
       joinedAt: this.now(),
       listening: new Set(),
       names: new Map(),
+      player: undefined,
+      clips: [],
+      playing: false,
     };
+    if (this.opts.tts) {
+      const player = voice.createAudioPlayer();
+      player.on("error", (err: Error) =>
+        this.opts.log.warn("discord: speech playback failed", { error: err.message }),
+      );
+      connection.subscribe(player);
+      live.player = player;
+    }
     this.live.set(meeting.id, live);
     this.syncMembers(meeting, live);
     connection.receiver.speaking.on("start", (userId: string) =>
@@ -210,6 +284,7 @@ export class DiscordAdapter implements PlatformAdapter {
   private async onConnectionState(meeting: Meeting, live: Live, status: string): Promise<void> {
     const { voice } = this.opts.runtime;
     if (status === voice.Status.Destroyed) {
+      this.stopSpeech(live);
       this.live.delete(meeting.id);
       meeting.setState("ended", "disconnected");
       return;
@@ -223,9 +298,37 @@ export class DiscordAdapter implements PlatformAdapter {
         voice.entersState(live.connection, voice.Status.Connecting, RECONNECT_GRACE_MS),
       ]);
     } catch {
+      this.stopSpeech(live);
       live.connection.destroy();
       this.live.delete(meeting.id);
       meeting.setState("ended", "disconnected");
+    }
+  }
+
+  /**
+   * A typed line in the voice channel's built-in text chat (it shares the voice channel's id).
+   * Other channels, bots, webhooks and our own messages are ignored.
+   */
+  private onMessage(msg: MessageLike): void {
+    if (msg.author.bot || msg.webhookId || msg.author.id === this.client.user?.id) {
+      return;
+    }
+    for (const [id, live] of this.live) {
+      if (msg.channelId !== live.channel.id) continue;
+      const meeting = this.opts.registry.get(id);
+      if (!meeting || meeting.terminal || msg.guildId !== meeting.guildId) continue;
+      const name = nameOf(
+        msg.member ?? {
+          user: { username: msg.author.username, globalName: msg.author.globalName },
+        },
+        msg.author.id,
+      );
+      live.names.set(msg.author.id, name);
+      meeting.addChat({
+        author: { id: msg.author.id, name },
+        text: msg.content,
+        at: new Date(msg.createdTimestamp).toISOString(),
+      });
     }
   }
 
@@ -334,6 +437,7 @@ export class DiscordAdapter implements PlatformAdapter {
     const live = this.live.get(meeting.id);
     this.live.delete(meeting.id);
     meeting.setState("ended", reason);
+    if (live) this.stopSpeech(live);
     live?.connection.destroy();
   }
 
@@ -359,11 +463,97 @@ export class DiscordAdapter implements PlatformAdapter {
     }
   }
 
-  async say(): Promise<void> {
-    throw new QuorumError(
-      "platform_unavailable",
-      "speaking is not supported on Discord in this version",
-    );
+  /**
+   * Synthesizes `text` and queues it behind earlier clips. Resolves once the audio is ready (so a
+   * TTS failure answers upstream_error); playback continues in the background.
+   */
+  async say(meeting: Meeting, text: string): Promise<void> {
+    const tts = this.opts.tts;
+    if (!tts) {
+      throw new QuorumError(
+        "platform_unavailable",
+        "QUORUM_TTS_URL is not set, so the bot cannot speak on Discord",
+      );
+    }
+    const live = this.live.get(meeting.id);
+    if (!live?.player) {
+      throw new QuorumError("not_live", "the bot is not in the voice channel");
+    }
+    const voice = meeting.voiceId ?? this.opts.config.ttsVoice;
+    const clip = tts.synthesize(text, voice).then(upsampleToStereo48k);
+    live.clips.push(clip.catch(() => undefined));
+    void this.drain(meeting, live);
+    await clip;
+  }
+
+  private async drain(meeting: Meeting, live: Live): Promise<void> {
+    if (live.playing) return;
+    live.playing = true;
+    try {
+      for (let next = live.clips.shift(); next; next = live.clips.shift()) {
+        const pcm = await next;
+        if (!pcm || this.live.get(meeting.id) !== live) continue;
+        await this.play(live, pcm);
+      }
+    } finally {
+      live.playing = false;
+    }
+  }
+
+  /** Plays one clip and resolves when the player is idle again (or a safety timeout passes). */
+  private play(live: Live, pcm: Buffer): Promise<void> {
+    const player = live.player as AudioPlayerLike;
+    const { runtime } = this.opts;
+    const frames = pcmFrames(pcm);
+    const encoder = runtime.createEncoder();
+    let i = 0;
+    let freed = false;
+    const free = (): void => {
+      if (!freed) {
+        freed = true;
+        encoder.delete?.();
+      }
+    };
+    // Encode lazily, one frame per read, so a long clip never blocks the event loop.
+    const stream = new Readable({
+      objectMode: true,
+      read() {
+        const frame = frames[i++];
+        if (!frame) {
+          free();
+          this.push(null);
+          return;
+        }
+        this.push(encoder.encode(frame, OPUS_FRAME_SAMPLES));
+      },
+      destroy(err, cb) {
+        free();
+        cb(err);
+      },
+    });
+    return new Promise<void>((resolve) => {
+      const idle = runtime.voice.PlayerIdle;
+      const timer = setTimeout(done, frames.length * OPUS_FRAME_MS + PLAYBACK_GRACE_MS);
+      timer.unref();
+      function done(): void {
+        clearTimeout(timer);
+        player.off(idle, done);
+        stream.destroy();
+        resolve();
+      }
+      player.once(idle, done);
+      try {
+        player.play(runtime.voice.createOpusResource(stream));
+      } catch (err) {
+        this.opts.log.warn("discord: speech playback failed", { error: String(err) });
+        done();
+      }
+    });
+  }
+
+  private stopSpeech(live: Live): void {
+    live.clips.length = 0;
+    live.player?.stop(true);
   }
 
   /** Discord audio and transcripts exist only in quorum's memory; leaving is all there is to do. */

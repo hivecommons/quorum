@@ -17,6 +17,7 @@ export interface JoinArgs {
   url?: string;
   displayName: string;
   voice: boolean;
+  voiceId?: string;
   passcode?: string;
   meetingUrl?: string;
   teamsBaseHost?: string;

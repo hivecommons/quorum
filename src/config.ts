@@ -28,6 +28,8 @@ export const DEFAULTS = {
   discordJoinTimeoutS: 20,
   discordRequestTtlS: 300,
   transcribeTimeoutMs: 60_000,
+  ttsVoice: "af_heart",
+  ttsTimeoutMs: 30_000,
 } as const;
 
 export type DiscordCommandScope = "guild" | "global" | "off";
@@ -44,6 +46,10 @@ export interface Config {
   transcribeUrl: string | undefined;
   transcribeTokenFile: string | undefined;
   transcribeLanguage: string | undefined;
+  ttsUrl: string | undefined;
+  ttsTokenFile: string | undefined;
+  ttsVoice: string;
+  ttsTimeoutMs: number;
   chatMaxChars: number;
   sayMaxChars: number;
   transcriptBuffer: number;
@@ -128,6 +134,10 @@ export function loadConfig(env: Env = process.env): Config {
     transcribeUrl: optional(env, "QUORUM_TRANSCRIBE_URL")?.replace(/\/+$/, ""),
     transcribeTokenFile: optional(env, "QUORUM_TRANSCRIBE_TOKEN_FILE"),
     transcribeLanguage: optional(env, "QUORUM_TRANSCRIBE_LANGUAGE"),
+    ttsUrl: optional(env, "QUORUM_TTS_URL")?.replace(/\/+$/, ""),
+    ttsTokenFile: optional(env, "QUORUM_TTS_TOKEN_FILE"),
+    ttsVoice: optional(env, "QUORUM_TTS_VOICE") ?? DEFAULTS.ttsVoice,
+    ttsTimeoutMs: positiveInt(env, "QUORUM_TTS_TIMEOUT_MS", DEFAULTS.ttsTimeoutMs),
     chatMaxChars: positiveInt(env, "QUORUM_CHAT_MAX_CHARS", DEFAULTS.chatMaxChars),
     sayMaxChars: positiveInt(env, "QUORUM_SAY_MAX_CHARS", DEFAULTS.sayMaxChars),
     transcriptBuffer: positiveInt(env, "QUORUM_TRANSCRIPT_BUFFER", DEFAULTS.transcriptBuffer),

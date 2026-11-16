@@ -12,6 +12,8 @@ Quorum runs **inside the hive container** as a child process that hive starts an
 - Vexa: `QUORUM_VEXA_URL` (gateway base URL), `QUORUM_VEXA_API_KEY_FILE` (tenant key; hive writes it from its keystore).
 - Discord: `QUORUM_DISCORD_TOKEN_FILE` (per-hive bot token, optional; Discord tools return `platform_unavailable` without it).
 - Whisper for Discord audio: `QUORUM_TRANSCRIBE_URL` (the shared CPU transcription service), optional `QUORUM_TRANSCRIBE_TOKEN_FILE`.
+- Speech on Discord: `QUORUM_TTS_URL` (the shared Kokoro service, OpenAI-compatible `/v1/audio/speech`), optional `QUORUM_TTS_TOKEN_FILE` (sent as `X-API-Key`), `QUORUM_TTS_VOICE` (default `af_heart`). Without `QUORUM_TTS_URL`, Discord `say` returns `platform_unavailable`.
+- Typed chat on Discord needs the privileged MessageContent intent, which the operator enables for the bot in the Discord developer portal. If Discord refuses it, quorum logs a warning once and connects without it: voice, transcripts and `chat.post` keep working, and no typed `chat` events arrive.
 - Every numeric limit in this file is an env var with the default shown.
 
 ## 1. Quorum MCP tools (hive is the client)
@@ -20,18 +22,18 @@ All tools return `{ok: true, ...}` or `{ok: false, error: {code, message}}`, as 
 
 | Tool | Arguments | Result |
 |---|---|---|
-| `meeting.join` | `{url, display_name, platform?, voice?}` platform inferred from URL: `google_meet`, `teams`, `zoom`; Discord uses `{platform:"discord", guild_id, channel_id}`. `voice` (default `QUORUM_VEXA_VOICE`=false) starts the bot able to speak; Vexa fixes this at join time. Joining a meeting quorum is already in returns that meeting. | `{meeting_id, platform, state}` |
+| `meeting.join` | `{url, display_name, platform?, voice?, voice_id?}` platform inferred from URL: `google_meet`, `teams`, `zoom`; Discord uses `{platform:"discord", guild_id, channel_id}`. `voice` (default `QUORUM_VEXA_VOICE`=false) starts the bot able to speak; Vexa fixes this at join time; Discord ignores it (it can speak whenever `QUORUM_TTS_URL` is set). `voice_id` (optional, at most 100 characters) picks the TTS voice for this meeting's `say`: on Discord the Kokoro voice (default `QUORUM_TTS_VOICE`), on Vexa the `voice` sent with each speak request (Vexa's TTS default when absent). Joining a meeting quorum is already in returns that meeting (and keeps its original `voice_id`). | `{meeting_id, platform, state}` |
 | `meeting.leave` | `{meeting_id}` | `{state}` |
 | `meeting.status` | `{meeting_id}` | `{state, participants:[{id,name}]}` |
 | `transcript.read` | `{meeting_id, after_seq?}` | `{segments:[Segment], next_seq}` final segments only, oldest first; `next_seq` is the cursor to pass back as `after_seq` |
 | `chat.post` | `{meeting_id, text}` text max `QUORUM_CHAT_MAX_CHARS`=2000 | `{posted_at}` |
-| `say` | `{meeting_id, text}` | `{queued:true}`; `platform_unavailable` when the bot was started without voice |
+| `say` | `{meeting_id, text}` text max `QUORUM_SAY_MAX_CHARS`=1000 | `{queued:true}` once the speech is accepted; clips play in call order. `platform_unavailable` when the bot was started without voice (Vexa) or `QUORUM_TTS_URL` is unset (Discord); `upstream_error` when the TTS service fails (Discord) |
 | `meeting.delete` | `{meeting_id}` | `{deleted:true}` erases transcript upstream |
 
 Live streaming: hive opens `GET /events?meeting_id=...` (Server-Sent Events, same bearer) and receives one JSON object per event. The stream starts with the meeting's current `state` event; `after_seq=N` first replays buffered segment and chat events after N; the SSE `id` is the event's `seq`. Without `meeting_id` the stream carries every meeting's events and starts with the current state of each meeting that has not ended.
 
 - `{"type":"segment", "meeting_id", "seq", "speaker":{id,name}, "text", "start", "end", "final"}`
-- `{"type":"chat", "meeting_id", "seq", "author":{id,name}, "text", "at"}`
+- `{"type":"chat", "meeting_id", "seq", "author":{id,name}, "text", "at"}` On Discord these are lines people type in the voice channel's built-in text chat (only that channel; bots, webhooks and quorum's own posts are skipped), with `author.id` = the Discord user id.
 - `{"type":"state", "meeting_id", "state", "reason?"}` where `state` is one of `requested, joining, lobby, live, ended, failed, blocked`. A `requested` event raised from the platform (Discord `/hive join`) also carries `platform`, `guild_id`, `channel_id` and `requested_by:{id,name}`; hive approves it by calling `meeting.join` for that channel (same `meeting_id`) or declines it with `meeting.leave`.
 
 `seq` is one counter per meeting shared by segment and chat events. `start` and `end` are seconds from the session start. On Vexa platforms `speaker.id` is the display name (Vexa carries no stable participant id); on Discord it is the user id.

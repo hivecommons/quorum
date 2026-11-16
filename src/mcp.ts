@@ -27,6 +27,10 @@ export const TOOLS = [
         guild_id: { type: "string", description: "Discord server id" },
         channel_id: { type: "string", description: "Discord voice channel id" },
         voice: { type: "boolean", description: "Start the bot with voice so say works" },
+        voice_id: {
+          type: "string",
+          description: "TTS voice for say (Discord: a Kokoro voice such as af_heart)",
+        },
       },
     },
   },

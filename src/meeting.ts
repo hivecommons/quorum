@@ -90,6 +90,8 @@ export class Meeting {
   endedAt: number | undefined;
   displayName: string;
   voice = false;
+  /** TTS voice from meeting.join voice_id: Discord's Kokoro voice, Vexa's per-speak voice. */
+  voiceId: string | undefined;
   /** Vexa addressing, set for google_meet, teams and zoom. */
   nativeId: string | undefined;
   vexaId: number | undefined;

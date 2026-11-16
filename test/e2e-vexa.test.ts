@@ -519,6 +519,27 @@ describe("chat.post and say", () => {
       });
     }
   });
+  it("passes voice_id through as the per-speak voice and validates it", async () => {
+    expect(
+      await h.call("meeting.join", { url: MEET, display_name: "Hive", voice_id: "x".repeat(101) }),
+    ).toMatchObject({
+      error: { code: "invalid_argument", message: expect.stringContaining("voice_id") },
+    });
+    expect(
+      await h.call("meeting.join", { url: MEET, display_name: "Hive", voice_id: 7 }),
+    ).toMatchObject({ error: { code: "invalid_argument" } });
+    const id = await joinMeet({ voice: true, voice_id: "af_bella" });
+    expect(
+      fake.requests.find((r) => r.method === "POST" && r.path === "/bots")?.body,
+    ).not.toHaveProperty("voice_id");
+    fake.broadcast(status("active"));
+    await until(() => h.q.quorum.registry.get(id)?.state === "live");
+    expect(await h.call("say", { meeting_id: id, text: "hi" })).toMatchObject({ ok: true });
+    expect(fake.requests.find((r) => r.path.endsWith("/speak"))?.body).toEqual({
+      text: "hi",
+      voice: "af_bella",
+    });
+  });
 });
 
 describe("meeting.leave, meeting.delete and status", () => {

@@ -164,8 +164,11 @@ export class VexaClient {
     return (await this.request<{ request_id?: string }>("POST", path, { text })).data ?? {};
   }
 
-  async speak(platform: string, nativeId: string, text: string): Promise<void> {
-    await this.request("POST", botPath(platform, nativeId) + "/speak", { text });
+  async speak(platform: string, nativeId: string, text: string, voice?: string): Promise<void> {
+    await this.request("POST", botPath(platform, nativeId) + "/speak", {
+      text,
+      ...(voice ? { voice } : {}),
+    });
   }
 
   async deleteMeeting(platform: string, nativeId: string): Promise<void> {

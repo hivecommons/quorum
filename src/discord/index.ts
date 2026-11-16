@@ -3,6 +3,7 @@ import { readSecretFile } from "../config.js";
 import { DiscordAdapter } from "./adapter.js";
 import { loadDiscordRuntime } from "./runtime.js";
 import { Transcriber } from "./transcribe.js";
+import { TtsClient } from "./tts.js";
 import type { DiscordRuntime } from "./types.js";
 
 /**
@@ -36,7 +37,17 @@ export function discordAdapters(
           timeoutMs: config.transcribeTimeoutMs,
         })
       : undefined;
-    const adapter = new DiscordAdapter({ runtime, registry, log, config, transcriber });
+    const tts = config.ttsUrl
+      ? new TtsClient({
+          url: config.ttsUrl,
+          token: () =>
+            config.ttsTokenFile
+              ? readSecretFile(config.ttsTokenFile, "QUORUM_TTS_TOKEN_FILE")
+              : undefined,
+          timeoutMs: config.ttsTimeoutMs,
+        })
+      : undefined;
+    const adapter = new DiscordAdapter({ runtime, registry, log, config, transcriber, tts });
     adapter.start(token).catch((err: unknown) => {
       log.error("discord login failed; Discord tools answer platform_unavailable", {
         error: (err as Error).message,

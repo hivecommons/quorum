@@ -18,6 +18,7 @@ import { parseMeetingUrl } from "./urls.js";
  */
 
 const DISPLAY_NAME_MAX_CHARS = 100;
+const VOICE_ID_MAX_CHARS = 100;
 const SNOWFLAKE = /^\d{5,25}$/;
 
 type Args = Record<string, unknown>;
@@ -142,6 +143,13 @@ export class Quorum {
           `display_name is longer than ${DISPLAY_NAME_MAX_CHARS} characters`,
         );
       }
+      const voiceId = optionalString(args, "voice_id");
+      if (voiceId !== undefined && voiceId.length > VOICE_ID_MAX_CHARS) {
+        throw new QuorumError(
+          "invalid_argument",
+          `voice_id is longer than ${VOICE_ID_MAX_CHARS} characters`,
+        );
+      }
       const m =
         platformArg === "discord"
           ? this.discordMeeting(args, displayName)
@@ -151,12 +159,18 @@ export class Quorum {
       }
       const meeting = m.meeting;
       meeting.voice = voice;
+      meeting.voiceId = voiceId;
       const adapter = this.adapter(meeting.platform);
       if (!this.opts.registry.get(meeting.id)) {
         this.opts.registry.add(meeting);
       }
       try {
-        await adapter.join(meeting, { displayName, voice, ...m.extra });
+        await adapter.join(meeting, {
+          displayName,
+          voice,
+          ...(voiceId ? { voiceId } : {}),
+          ...m.extra,
+        });
       } catch (err) {
         meeting.setState("failed", err instanceof QuorumError ? err.code : "join_error");
         this.opts.registry.remove(meeting.id);
