@@ -337,8 +337,7 @@ export class Quorum {
       const m = this.meeting(args);
       const text = boundedText(args, this.opts.config.sayMaxChars);
       this.requireLive(m);
-      const out = await this.adapter(m.platform).say(m, text);
-      const durationMs = out ? out.durationMs : undefined;
+      const { durationMs } = await this.adapter(m.platform).say(m, text);
       return {
         queued: true as const,
         ...(durationMs === undefined ? {} : { duration_ms: durationMs }),

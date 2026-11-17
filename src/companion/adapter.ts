@@ -1,4 +1,10 @@
-import type { ChatDelivery, ChatOptions, JoinArgs, PlatformAdapter } from "../adapter.js";
+import type {
+  ChatDelivery,
+  ChatOptions,
+  JoinArgs,
+  PlatformAdapter,
+  SayOutcome,
+} from "../adapter.js";
 import type { Config } from "../config.js";
 import { encodeWav } from "../discord/audio.js";
 import { nameHints, type Transcriber } from "../discord/transcribe.js";
@@ -235,7 +241,7 @@ export class CompanionAdapter implements PlatformAdapter {
     return "confirmed";
   }
 
-  async say(): Promise<void> {
+  async say(): Promise<SayOutcome> {
     throw new QuorumError(
       "platform_unavailable",
       "companion meetings cannot speak yet; replies stay in the companion window",

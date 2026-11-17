@@ -155,7 +155,6 @@ export class Transcriber {
   async transcribe(wav: Buffer, call: TranscribeOptions = {}): Promise<string> {
     const prompt = buildPrompt([...(call.hints ?? []), ...(this.opts.hotwords ?? [])]);
     const { maxAttempts } = this.retry;
-    let last = "";
     for (let attempt = 1; ; attempt++) {
       try {
         return await this.once(wav, prompt);
@@ -163,11 +162,10 @@ export class Transcriber {
         if (!(err instanceof Retryable)) {
           throw err;
         }
-        last = err.message;
         if (attempt >= maxAttempts) {
           throw new QuorumError(
             "upstream_error",
-            `${last} (gave up after ${attempt} attempt${attempt === 1 ? "" : "s"})`,
+            `${err.message} (gave up after ${attempt} attempt${attempt === 1 ? "" : "s"})`,
           );
         }
         await this.sleep(this.backoffMs(attempt, err.afterMs));

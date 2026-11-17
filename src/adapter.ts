@@ -19,7 +19,7 @@ export interface PlatformAdapter {
    * with the clip's real length when the platform reports it; throws when the platform reports
    * the line could not be spoken (for example a muted microphone).
    */
-  say(meeting: Meeting, text: string): Promise<SayOutcome | void>;
+  say(meeting: Meeting, text: string): Promise<SayOutcome>;
   /** Erases the transcript upstream (quorum clears its own buffer afterwards). */
   erase(meeting: Meeting): Promise<void>;
 }
