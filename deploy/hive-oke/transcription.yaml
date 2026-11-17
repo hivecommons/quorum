@@ -1,13 +1,16 @@
 # CPU Whisper (faster-whisper, int8) in two tiers, both from the same image (built in
 # hivecommons/vexa quorum-images.yml with `small` baked in):
 #
-#   realtime  Deployment vexa-transcription-rt, model `base`, beam 1, 2 replicas. Every live
-#             consumer reaches it through Service `vexa-transcription` (the bots via meeting-api's
-#             TRANSCRIPTION_SERVICE_URL, Quorum's Discord and companion paths via
-#             QUORUM_TRANSCRIBE_URL). Measured in-cluster on a 2 s clip: about 1.6-1.9 s per
-#             request, against 8-10 s for `small` with beam 5 (the encoder dominates; beam size
-#             barely moves `small`). An init container fetches `base` at a pinned Hugging Face
-#             commit into an emptyDir; the server itself stays offline.
+#   realtime  Deployment vexa-transcription-rt, model `base.en`, beam 1, 4 threads, 2 replicas.
+#             Every live consumer reaches it through Service `vexa-transcription` (the bots via
+#             meeting-api's TRANSCRIPTION_SERVICE_URL, Quorum's Discord and companion paths via
+#             QUORUM_TRANSCRIBE_URL). Chosen from an in-cluster benchmark (beam 1, 4 threads, P50 /
+#             P95 per clip on 2-6 s spoken questions): tiny.en 0.5 / 0.6 s but misheard words;
+#             base.en 0.8-0.9 / 1.0 s; distil-small.en 1.9 / 2.0 s; small.en 2.1-2.3 / 2.5-2.8 s.
+#             2 threads is about 1.6x slower for every model, so 2 Pods x 4 threads beats 4 x 2.
+#             Multilingual `base` lost the bot's name with hotwords set; base.en did not. An init
+#             container fetches base.en at a pinned Hugging Face commit into an emptyDir; the
+#             server itself stays offline and warms the model up before it reports ready.
 #   batch     Deployment vexa-transcription, model `small`, beam 5, 1 replica, behind Service
 #             `vexa-transcription-batch`, for after-meeting transcription where quality matters
 #             more than latency.
@@ -37,8 +40,8 @@ spec:
       automountServiceAccountToken: false
       containers:
         - name: transcription
-          # main-70859c1-quorum (linux/amd64, linux/arm64), hivecommons/vexa 70859c137
-          image: ghcr.io/hivecommons/vexa-transcription-cpu:main-70859c1-quorum@sha256:700c4a862dd471fafb39d0a981ef62df946f9764472020389f33d662f49ace55
+          # main-6983af5-quorum (linux/amd64, linux/arm64), hivecommons/vexa 6983af58b (hotwords, warm-up)
+          image: ghcr.io/hivecommons/vexa-transcription-cpu:main-6983af5-quorum@sha256:52b2da5c8c2e7f22f5a5e2fb991a871b80807cdf4f4a849fca3b33db21b030a1
           env:
             - name: WORKER_ID
               value: "1"
@@ -112,13 +115,13 @@ spec:
                   matchLabels:
                     app.kubernetes.io/name: vexa-transcription-rt
       initContainers:
-        # Fetch faster-whisper `base` at a pinned commit of Systran/faster-whisper-base into the
+        # Fetch faster-whisper `base.en` at a pinned commit of Systran/faster-whisper-base.en into the
         # model cache, and point the cache's refs/main at it so the offline server resolves it.
         - name: fetch-model
-          image: ghcr.io/hivecommons/vexa-transcription-cpu:main-70859c1-quorum@sha256:700c4a862dd471fafb39d0a981ef62df946f9764472020389f33d662f49ace55
+          image: ghcr.io/hivecommons/vexa-transcription-cpu:main-6983af5-quorum@sha256:52b2da5c8c2e7f22f5a5e2fb991a871b80807cdf4f4a849fca3b33db21b030a1
           env:
             - name: MODEL_REVISION
-              value: ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66
+              value: 3d3d5dee26484f91867d81cb899cfcf72b96be6c
             - name: HF_HUB_DISABLE_TELEMETRY
               value: "1"
           command:
@@ -128,8 +131,8 @@ spec:
               import os
               from faster_whisper.utils import download_model
               rev = os.environ["MODEL_REVISION"]
-              print(download_model("base", cache_dir="/app/models", revision=rev))
-              refs = "/app/models/models--Systran--faster-whisper-base/refs"
+              print(download_model("base.en", cache_dir="/app/models", revision=rev))
+              refs = "/app/models/models--Systran--faster-whisper-base.en/refs"
               os.makedirs(refs, exist_ok=True)
               with open(refs + "/main", "w") as f:
                   f.write(rev)
@@ -145,12 +148,12 @@ spec:
       containers:
         - name: transcription
           # Same image and digest as the batch tier above.
-          image: ghcr.io/hivecommons/vexa-transcription-cpu:main-70859c1-quorum@sha256:700c4a862dd471fafb39d0a981ef62df946f9764472020389f33d662f49ace55
+          image: ghcr.io/hivecommons/vexa-transcription-cpu:main-6983af5-quorum@sha256:52b2da5c8c2e7f22f5a5e2fb991a871b80807cdf4f4a849fca3b33db21b030a1
           env:
             - name: WORKER_ID
               value: "rt"
             - name: MODEL_SIZE
-              value: base
+              value: base.en
             - name: DEVICE
               value: cpu
             - name: COMPUTE_TYPE
@@ -158,7 +161,7 @@ spec:
             # Match the CPU limit below.
             - name: CPU_THREADS
               value: "4"
-            # Greedy decoding: beam 5 doubles `base`'s time for no gain on short live windows.
+            # Greedy decoding: beam 5 doubles the model's time for no gain on short live windows.
             - name: BEAM_SIZE
               value: "1"
             - name: BEST_OF
