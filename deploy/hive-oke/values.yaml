@@ -1,6 +1,6 @@
 # Vexa Helm values for the shared Quorum meeting service on hive-oke (namespace `meetings`).
 #
-# Chart: deploy/helm/charts/vexa from hivecommons/vexa main at commit 3addb0a940acc42e899b2748711c93dab2467874 (chart 0.13.4,
+# Chart: deploy/helm/charts/vexa from hivecommons/vexa main at commit 93bc10a5d2972197642a960e885b356a5063d50a (chart 0.13.4,
 # appVersion 0.13.4). Install with ./install.sh, which also creates the Secrets and applies the
 # namespace policy rendered from the `quorum` block below.
 #
@@ -18,7 +18,7 @@
 # ---- Quorum deployment knobs (read by install.sh, ignored by the chart) ----
 quorum:
   # The hivecommons/vexa commit the chart is taken from and every Vexa image is built from.
-  vexaCommit: 3addb0a940acc42e899b2748711c93dab2467874
+  vexaCommit: 93bc10a5d2972197642a960e885b356a5063d50a
   # Most meeting-bot Pods that may run at once in `meetings`. Enforced twice:
   #   1. ResourceQuota `meetings-quota`: pods = controlPlanePods + maxConcurrentBots
   #      (bot Pods are bare Pods the runtime creates, so a quota cannot select only them);
@@ -72,13 +72,13 @@ mcp:
   enabled: false
   image:
     repository: ghcr.io/hivecommons/vexa-mcp
-    tag: main-3addb0a-quorum@sha256:d4f802bce02ff8e22022b4f708651d6ba2459772f231b54d09fd73f037d3a84e
+    tag: main-93bc10a-quorum@sha256:dcd8ecc676c11e556abfbd4782e49dc5418f871127d2a05c5d8e8d553bb64611
 
 gateway:
   replicaCount: 2
   image:
     repository: ghcr.io/hivecommons/vexa-gateway
-    tag: main-3addb0a-quorum@sha256:ac40a5d374a8fef37dd4df7a31dc97b83e56555e5b636bf42e58a6d3f4a6691e
+    tag: main-93bc10a-quorum@sha256:76803e7958da25f9b989b554773d65bc8390c3d291ee80c10a0756545e2e632d
   service:
     type: ClusterIP
 
@@ -86,13 +86,13 @@ adminApi:
   replicaCount: 2
   image:
     repository: ghcr.io/hivecommons/vexa-admin-api
-    tag: main-3addb0a-quorum@sha256:5ecf337d6d63c415bc2a0ce6a78e02df8c71e3dc8ecc28cc9486bef3c22a0e63
+    tag: main-93bc10a-quorum@sha256:0db02dc2551139e6b74561839f2e621eb73570e49cb702e94c97d4dea1ed323b
 
 meetingApi:
   replicaCount: 2
   image:
     repository: ghcr.io/hivecommons/vexa-meeting-api
-    tag: main-3addb0a-quorum@sha256:6f7e881be4f643bdd3b860c50635270e2c3d597f7ad80b476532bee832b3e569
+    tag: main-93bc10a-quorum@sha256:bd6a7aeaa034c1dd760aa84c79588c783845bd8c73302385384b74795688edf8
   # Participants see this name; it says the bot takes notes (RFC: behaviour in the meeting).
   defaultBotName: "Hive notes (AI notetaker)"
   transcriptionServiceUrl: http://vexa-transcription:8000
@@ -117,16 +117,16 @@ runtime:
   replicaCount: 1
   image:
     repository: ghcr.io/hivecommons/vexa-runtime
-    tag: main-3addb0a-quorum@sha256:d5a51457840a0e349415e266aa21ad706a75daed9c640c645454b2a620ee3529
+    tag: main-93bc10a-quorum@sha256:1c815b101a91dfd6b269030bc1a6223d708043efe9eadb533eb4f116cd51b020
   # The meeting bot, from the same commit as everything else (hivecommons/vexa#15: lines are
   # synthesized and played sentence by sentence from a per-sentence cache, the microphone is
   # opened once at join and carries only the speech clip, the Meet final follows the pause by
   # one transcription round trip, Teams utterances cross whole and Teams chat text is typed in
   # and checked before send). install.sh also pre-pulls this image on every bot node.
-  browserImage: ghcr.io/hivecommons/vexa-bot:main-3addb0a-quorum@sha256:5ae0a60e4123d7e236b9896f882005201273dc9eb474582b955e9d685d28bda7
+  browserImage: ghcr.io/hivecommons/vexa-bot:main-93bc10a-quorum@sha256:2170dbde3c706cea6214a925c2b89c2341b0b9fd1eebc89ba95f829fb44dd511
   # Agent workers are not used by Quorum (agentApi is off); pinned anyway so nothing is mutable.
-  agentImage: ghcr.io/hivecommons/vexa-agent-api:main-3addb0a-quorum@sha256:f3e38905b1ed0c2d53e5cc8c205b1d27349b30e5c74df842d01cf6ea2ec18de3
-  agentWorkerImage: ghcr.io/hivecommons/vexa-agent-worker:main-3addb0a-quorum@sha256:4bb8d561bd1e386c2ef3d1539437e133e74eb3342056da3366fe03570e74ddf0
+  agentImage: ghcr.io/hivecommons/vexa-agent-api:main-93bc10a-quorum@sha256:86db5f578b637f248f200ca9a7f88c794179b0c63a9389fbe944c5a689c6aac9
+  agentWorkerImage: ghcr.io/hivecommons/vexa-agent-worker:main-93bc10a-quorum@sha256:c40bd70cfb7721036398e0f14e7e529de5b2a16fd52594aff9248903b7a2470f
   # Each spawned bot Pod: Guaranteed QoS, request == limit. Sizing per upstream production
   # guidance (deploy docs: ~1.0-1.3Gi steady, Teams spikes past 2Gi; do not go below 2560Mi).
   workloadResources:
