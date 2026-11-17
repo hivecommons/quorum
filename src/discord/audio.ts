@@ -128,3 +128,63 @@ export class Utterance {
     return { samples: out, startMs, endMs };
   }
 }
+
+/** Frame length the silence trim measures loudness over. */
+const TRIM_FRAME_MS = 20;
+/** Audio kept on each side of the speech the trim finds, so word onsets and tails survive. */
+export const TRIM_PAD_MS = 200;
+
+/** Root mean square of one frame on the int16 scale. */
+function frameRms(samples: Int16Array, from: number, to: number): number {
+  let sum = 0;
+  for (let i = from; i < to; i++) {
+    const v = samples[i] ?? 0;
+    sum += v * v;
+  }
+  return to > from ? Math.sqrt(sum / (to - from)) : 0;
+}
+
+/**
+ * Cuts leading and trailing silence from 16 kHz mono audio: the first and last 20 ms frames at or
+ * above `threshold` (RMS, int16 scale) bound the speech, padded by TRIM_PAD_MS each side. Returns
+ * the kept samples and how many milliseconds were cut from the start; all-quiet audio comes back
+ * empty, so the caller can skip the request entirely.
+ */
+export function trimSilence(
+  samples: Int16Array,
+  threshold: number,
+): { samples: Int16Array; leadMs: number } {
+  const frame = (STT_SAMPLE_RATE * TRIM_FRAME_MS) / MS_PER_S;
+  const frames = Math.ceil(samples.length / frame);
+  let first = -1;
+  let last = -1;
+  for (let f = 0; f < frames; f++) {
+    if (frameRms(samples, f * frame, Math.min(samples.length, (f + 1) * frame)) >= threshold) {
+      if (first < 0) first = f;
+      last = f;
+    }
+  }
+  if (first < 0) {
+    return { samples: new Int16Array(0), leadMs: 0 };
+  }
+  const pad = (STT_SAMPLE_RATE * TRIM_PAD_MS) / MS_PER_S;
+  const from = Math.max(0, first * frame - pad);
+  const to = Math.min(samples.length, (last + 1) * frame + pad);
+  return { samples: samples.slice(from, to), leadMs: (from / STT_SAMPLE_RATE) * MS_PER_S };
+}
+
+/** Joins sample runs end to end. */
+export function concatSamples(parts: Int16Array[]): Int16Array {
+  const out = new Int16Array(parts.reduce((n, p) => n + p.length, 0));
+  let offset = 0;
+  for (const p of parts) {
+    out.set(p, offset);
+    offset += p.length;
+  }
+  return out;
+}
+
+/** Duration of 16 kHz mono samples in milliseconds. */
+export function samplesMs(samples: Int16Array): number {
+  return (samples.length / STT_SAMPLE_RATE) * MS_PER_S;
+}

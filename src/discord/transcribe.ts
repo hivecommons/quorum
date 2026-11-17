@@ -5,9 +5,10 @@ import { QuorumError } from "../errors.js";
  * core/meetings/services/transcription): OpenAI-compatible `POST /v1/audio/transcriptions`,
  * multipart, auth by `X-API-Key` when the service has an API_TOKEN.
  *
- * The service takes a Whisper `prompt` (passed to faster-whisper as `initial_prompt`); it has no
- * `hotwords` field. Names the speakers are likely to say (the bot's own display name first) go in
- * the prompt so Whisper spells them instead of a sound-alike ("Betty", not "Eddie").
+ * Names the speakers are likely to say (the bot's own display name first) go in the Whisper
+ * `prompt` (faster-whisper's `initial_prompt`) and, as single words, in `hotwords` (faster-whisper's
+ * hotwords; a service without that field ignores it), so Whisper spells them instead of a
+ * sound-alike ("Betty", not "Eddie").
  *
  * The service sheds load with 503 (and Retry-After) while its worker is busy. A request answered
  * 429 or 5xx, or one that never got an answer, is retried with exponential backoff and jitter
@@ -44,7 +45,7 @@ export interface TranscriberOptions {
   token: () => string | undefined;
   language?: string;
   timeoutMs: number;
-  /** Extra names for every prompt (QUORUM_TRANSCRIBE_HOTWORDS), after the per-call hints. */
+  /** Vocabulary for every request (QUORUM_TRANSCRIBE_HOTWORDS), after the per-call hints. */
   hotwords?: string[];
   retry?: Partial<RetryPolicy>;
   fetchImpl?: typeof fetch;
@@ -106,6 +107,21 @@ export function buildPrompt(names: string[]): string | undefined {
   return prompt ? `${prompt}.` : undefined;
 }
 
+/**
+ * The hotwords: each hint's first word (the name the bot is called by) and every vocabulary entry
+ * as written, deduplicated, comma-separated, cut at PROMPT_MAX_CHARS on an entry boundary.
+ */
+export function buildHotwords(hints: string[], vocabulary: string[] = []): string | undefined {
+  const words = dedupe([...hints.map((n) => n.trim().split(/\s+/)[0] ?? ""), ...vocabulary]);
+  let out = "";
+  for (const w of words) {
+    const next = out ? `${out}, ${w}` : w;
+    if (next.length > PROMPT_MAX_CHARS) break;
+    out = next;
+  }
+  return out || undefined;
+}
+
 /** Whether an HTTP status is worth another try (busy, overloaded, or a server fault). */
 export function isRetryableStatus(status: number): boolean {
   return (
@@ -153,11 +169,14 @@ export class Transcriber {
   }
 
   async transcribe(wav: Buffer, call: TranscribeOptions = {}): Promise<string> {
-    const prompt = buildPrompt([...(call.hints ?? []), ...(this.opts.hotwords ?? [])]);
+    const hints = call.hints ?? [];
+    const vocabulary = this.opts.hotwords ?? [];
+    const prompt = buildPrompt([...hints, ...vocabulary]);
+    const hotwords = buildHotwords(hints, vocabulary);
     const { maxAttempts } = this.retry;
     for (let attempt = 1; ; attempt++) {
       try {
-        return await this.once(wav, prompt);
+        return await this.once(wav, prompt, hotwords);
       } catch (err) {
         if (!(err instanceof Retryable)) {
           throw err;
@@ -173,7 +192,11 @@ export class Transcriber {
     }
   }
 
-  private async once(wav: Buffer, prompt: string | undefined): Promise<string> {
+  private async once(
+    wav: Buffer,
+    prompt: string | undefined,
+    hotwords: string | undefined,
+  ): Promise<string> {
     const form = new FormData();
     form.append("file", new Blob([new Uint8Array(wav)], { type: "audio/wav" }), "audio.wav");
     form.append("model", MODEL);
@@ -184,6 +207,9 @@ export class Transcriber {
     }
     if (prompt) {
       form.append("prompt", prompt);
+    }
+    if (hotwords) {
+      form.append("hotwords", hotwords);
     }
     const headers: Record<string, string> = {};
     const token = this.opts.token();

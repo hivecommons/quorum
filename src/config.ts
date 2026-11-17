@@ -9,6 +9,15 @@ import { QuorumError } from "./errors.js";
  * them to, read on use so hive can rotate a key without restarting quorum.
  */
 
+/**
+ * Words a meeting with hive's attendant says that Whisper mishears without a hint ("pull request"
+ * as "full requests", "Betty leave" as "Betty Lee"), and the hive's repository names. Sent with
+ * every transcription request as prompt and hotwords; QUORUM_TRANSCRIBE_HOTWORDS replaces it.
+ */
+export const DEFAULT_TRANSCRIBE_HOTWORDS =
+  "Betty, leave, pull request, PR, issue, board pressure, hive, crux, dibs, docs, " +
+  "homebrew-hive, hotshot, pluk, promptargs, rationguard, quorum, vexa, quorum-companion";
+
 export const DEFAULTS = {
   listen: "127.0.0.1:8765",
   chatMaxChars: 2000,
@@ -22,9 +31,10 @@ export const DEFAULTS = {
   meetingRetentionS: 3600,
   maxBodyBytes: 1_048_576,
   echoWindowS: 120,
-  discordSilenceMs: 800,
+  discordSilenceMs: 500,
   discordMinSegmentMs: 300,
   discordMaxSegmentS: 30,
+  discordVadThreshold: 500,
   discordJoinTimeoutS: 20,
   discordRequestTtlS: 300,
   transcribeTimeoutMs: 60_000,
@@ -37,7 +47,7 @@ export const DEFAULTS = {
   chatConfirmPollMs: 500,
   sayConfirmTimeoutMs: 60_000,
   companionMaxChunkBytes: 131_072,
-  companionSilenceMs: 700,
+  companionSilenceMs: 500,
   companionMinSpeechMs: 300,
   companionMaxSegmentS: 20,
   companionVadThreshold: 500,
@@ -58,7 +68,7 @@ export interface Config {
   transcribeUrl: string | undefined;
   transcribeTokenFile: string | undefined;
   transcribeLanguage: string | undefined;
-  /** Extra names for the transcription prompt (QUORUM_TRANSCRIBE_HOTWORDS, comma-separated). */
+  /** Vocabulary for the transcription prompt and hotwords (QUORUM_TRANSCRIBE_HOTWORDS, comma-separated). */
   transcribeHotwords: string[];
   ttsUrl: string | undefined;
   ttsTokenFile: string | undefined;
@@ -81,6 +91,8 @@ export interface Config {
   discordSilenceMs: number;
   discordMinSegmentMs: number;
   discordMaxSegmentS: number;
+  /** Frame RMS (int16 scale) a Discord segment's speech must reach; quieter edges are trimmed. */
+  discordVadThreshold: number;
   discordJoinTimeoutS: number;
   discordRequestTtlS: number;
   transcribeTimeoutMs: number;
@@ -160,7 +172,7 @@ export function loadConfig(env: Env = process.env): Config {
     transcribeUrl: optional(env, "QUORUM_TRANSCRIBE_URL")?.replace(/\/+$/, ""),
     transcribeTokenFile: optional(env, "QUORUM_TRANSCRIBE_TOKEN_FILE"),
     transcribeLanguage: optional(env, "QUORUM_TRANSCRIBE_LANGUAGE"),
-    transcribeHotwords: (optional(env, "QUORUM_TRANSCRIBE_HOTWORDS") ?? "")
+    transcribeHotwords: (optional(env, "QUORUM_TRANSCRIBE_HOTWORDS") ?? DEFAULT_TRANSCRIBE_HOTWORDS)
       .split(",")
       .map((w) => w.trim())
       .filter(Boolean),
@@ -200,6 +212,11 @@ export function loadConfig(env: Env = process.env): Config {
       env,
       "QUORUM_DISCORD_MAX_SEGMENT_S",
       DEFAULTS.discordMaxSegmentS,
+    ),
+    discordVadThreshold: positiveInt(
+      env,
+      "QUORUM_DISCORD_VAD_THRESHOLD",
+      DEFAULTS.discordVadThreshold,
     ),
     discordJoinTimeoutS: positiveInt(
       env,

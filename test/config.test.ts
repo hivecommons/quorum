@@ -11,6 +11,9 @@ describe("loadConfig", () => {
     expect(c.port).toBe(8765);
     expect(c.chatMaxChars).toBe(2000);
     expect(c.transcriptBuffer).toBe(DEFAULTS.transcriptBuffer);
+    expect(c.transcribeHotwords).toContain("pull request");
+    expect(c.transcribeHotwords).toContain("Betty");
+    expect(c.discordSilenceMs).toBe(500);
     expect(c.discordCommands).toBe("guild");
     expect(c.vexaVoiceDefault).toBe(false);
     expect(c.vexaUrl).toBeUndefined();

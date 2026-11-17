@@ -5,7 +5,11 @@ import {
   OPUS_FRAME_BYTES,
   OPUS_FRAME_SAMPLES,
   Utterance,
+  concatSamples,
   encodeWav,
+  samplesMs,
+  TRIM_PAD_MS,
+  trimSilence,
   pcmFrames,
   toMono16k,
   upsampleToStereo48k,
@@ -13,6 +17,7 @@ import {
 import { isDisallowedIntents } from "../src/discord/adapter.js";
 import { loadDiscordRuntime } from "../src/discord/runtime.js";
 import {
+  buildHotwords,
   buildPrompt,
   isRetryableStatus,
   nameHints,
@@ -191,6 +196,26 @@ describe("isDisallowedIntents", () => {
   });
 });
 
+describe("trimSilence", () => {
+  const SR = 16_000;
+  const run = (ms: number, value: number) => new Int16Array((SR * ms) / 1000).fill(value);
+
+  it("cuts leading and trailing silence, keeping a pad each side", () => {
+    const audio = concatSamples([run(1000, 0), run(500, 2000), run(800, 3)]);
+    const { samples, leadMs } = trimSilence(audio, 500);
+    expect(leadMs).toBe(1000 - TRIM_PAD_MS);
+    expect(samplesMs(samples)).toBe(500 + 2 * TRIM_PAD_MS);
+    expect(samples[0]).toBe(0);
+    expect(samples[(SR * TRIM_PAD_MS) / 1000]).toBe(2000);
+  });
+
+  it("keeps audio that is loud to its edges, and returns nothing for all-quiet audio", () => {
+    expect(samplesMs(trimSilence(run(300, -1500), 500).samples)).toBe(300);
+    expect(trimSilence(run(2000, 100), 500)).toEqual({ samples: new Int16Array(0), leadMs: 0 });
+    expect(trimSilence(new Int16Array(0), 500).samples.length).toBe(0);
+  });
+});
+
 describe("Transcriber prompt and retries", () => {
   type Call = { form: FormData };
   function scripted(replies: Array<Response | Error>) {
@@ -235,7 +260,7 @@ describe("Transcriber prompt and retries", () => {
       await t().transcribe(Buffer.alloc(0), { hints: nameHints("Betty Bee from the hive") }),
     ).toBe("ok");
     expect(calls[0]?.form.get("prompt")).toBe("Betty, Betty Bee from the hive, Hive.");
-    expect(calls[0]?.form.get("hotwords")).toBeNull();
+    expect(calls[0]?.form.get("hotwords")).toBe("Betty, Hive");
     const bare = scripted([]);
     await new Transcriber({
       url: "http://stt",
@@ -247,6 +272,18 @@ describe("Transcriber prompt and retries", () => {
       }) as unknown as typeof fetch,
     }).transcribe(Buffer.alloc(0));
     expect(bare.calls[0]?.form.get("prompt")).toBeNull();
+    expect(bare.calls[0]?.form.get("hotwords")).toBeNull();
+    expect(buildHotwords(["Betty Bee from the hive", "betty"], ["pull request", "Hive"])).toBe(
+      "Betty, pull request, Hive",
+    );
+    expect(buildHotwords([" "])).toBeUndefined();
+    const many =
+      buildHotwords(
+        [],
+        Array.from({ length: 200 }, (_, i) => `word${i}`),
+      ) ?? "";
+    expect(many.length).toBeLessThanOrEqual(PROMPT_MAX_CHARS);
+    expect(many.endsWith(",")).toBe(false);
   });
 
   it("retries 503, 429, 5xx and network errors with growing jittered backoff, then succeeds", async () => {

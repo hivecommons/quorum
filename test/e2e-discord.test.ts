@@ -115,7 +115,7 @@ describe("Discord voice", () => {
 
     conn.speaking.emit("start", "500001");
     conn.speaking.emit("start", "500001");
-    expect(conn.subscribeOpts).toEqual([{ end: { behavior: 1, duration: 800 } }]);
+    expect(conn.subscribeOpts).toEqual([{ end: { behavior: 1, duration: 500 } }]);
     const stream = conn.streams.get("500001");
     for (let i = 0; i < 25; i++) stream?.emit("data", pcm48(20));
     stream?.emit("end");
@@ -234,6 +234,48 @@ describe("Discord voice", () => {
     await new Promise((r) => setTimeout(r, 50));
     segs = (await H().call("transcript.read", { meeting_id: id })).segments as { text: string }[];
     expect(segs.map((x) => x.text)).toEqual(["one", "two"]);
+  });
+
+  it("never sends all-quiet audio, and merges a speaker's backlog into one request while STT is busy", async () => {
+    await boot({
+      QUORUM_TRANSCRIBE_MAX_ATTEMPTS: "2",
+      QUORUM_TRANSCRIBE_BACKOFF_BASE_MS: "200",
+      QUORUM_TRANSCRIBE_BACKOFF_MAX_MS: "200",
+    });
+    const id = await joinDiscord({ display_name: "Betty" });
+    const conn = rt.connections[0];
+    const speak = (value: number) => {
+      conn?.speaking.emit("start", "500001");
+      const s = conn?.streams.get("500001");
+      for (let i = 0; i < 25; i++) s?.emit("data", pcm48(20, value));
+      s?.emit("end");
+    };
+    speak(0);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(stt.bodies).toHaveLength(0);
+
+    // The first segment meets a busy service and waits out its backoff; two more arrive meanwhile.
+    stt.replies.push(
+      { status: 503, body: "busy" },
+      { status: 200, body: { text: "first" } },
+      { status: 200, body: { text: "second and third" } },
+    );
+    speak(1000);
+    await until(() => stt.bodies.length === 1);
+    speak(1000);
+    speak(1000);
+    await until(() => stt.bodies.length === 3);
+    await new Promise((r) => setTimeout(r, 50));
+    const segs = (await H().call("transcript.read", { meeting_id: id })).segments as {
+      text: string;
+      start: number;
+      end: number;
+    }[];
+    expect(segs.map((x) => x.text)).toEqual(["first", "second and third"]);
+    // The merged request carried both waiting segments: twice one segment's audio.
+    const [, , merged] = stt.bodies;
+    expect((merged?.body.length ?? 0) / (stt.bodies[0]?.body.length ?? 1)).toBeGreaterThan(1.8);
+    expect(stt.bodies).toHaveLength(3);
   });
 
   it("tracks people joining and leaving the channel", async () => {

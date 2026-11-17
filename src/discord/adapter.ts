@@ -8,9 +8,12 @@ import {
   encodeWav,
   OPUS_FRAME_MS,
   OPUS_FRAME_SAMPLES,
+  concatSamples,
   pcmFrames,
   PLAYBACK_BYTES_PER_S,
+  samplesMs,
   toMono16k,
+  trimSilence,
   upsampleToStereo48k,
   Utterance,
 } from "./audio.js";
@@ -77,9 +80,19 @@ interface Live {
   /** Clips in `say` order; each resolves to 48 kHz stereo PCM, or undefined if synthesis failed. */
   clips: Promise<Buffer | undefined>[];
   playing: boolean;
-  /** One transcription chain per speaker, so a retried segment never lands after that speaker's
-   *  next one. */
-  chains: Map<string, Promise<void>>;
+  /** Per speaker: segments waiting for transcription, and whether one is being transcribed. */
+  stt: Map<string, SpeakerQueue>;
+}
+
+interface PendingSegment {
+  samples: Int16Array;
+  startMs: number;
+  endMs: number;
+}
+
+interface SpeakerQueue {
+  pending: PendingSegment[];
+  running: boolean;
 }
 
 export interface DiscordAdapterOptions {
@@ -311,7 +324,7 @@ export class DiscordAdapter implements PlatformAdapter {
       player: undefined,
       clips: [],
       playing: false,
-      chains: new Map(),
+      stt: new Map(),
     };
     if (this.opts.tts) {
       const player = voice.createAudioPlayer();
@@ -448,21 +461,72 @@ export class DiscordAdapter implements PlatformAdapter {
     });
   }
 
-  /** Takes the utterance's audio now and transcribes it after the speaker's earlier segments. */
+  /**
+   * Takes the utterance's audio now, trims its leading and trailing silence (all-quiet audio is
+   * never sent), and queues it behind the speaker's earlier segments. While the service is slow,
+   * a speaker's waiting segments are merged into one request (up to QUORUM_DISCORD_MAX_SEGMENT_S)
+   * instead of piling up one request each, so the newest speech goes out with the backlog rather
+   * than after it.
+   */
   private enqueueFlush(meeting: Meeting, live: Live, userId: string, utterance: Utterance): void {
-    const tooShort = utterance.durationMs < this.opts.config.discordMinSegmentMs;
+    const { config } = this.opts;
     const taken = utterance.take();
-    if (tooShort || taken.samples.length === 0) {
+    const trimmed = trimSilence(taken.samples, config.discordVadThreshold);
+    if (samplesMs(trimmed.samples) < config.discordMinSegmentMs) {
       return;
     }
-    const prev = live.chains.get(userId) ?? Promise.resolve();
-    const next = prev.then(() => this.flush(meeting, live, userId, taken));
-    live.chains.set(userId, next);
-    void next.finally(() => {
-      if (live.chains.get(userId) === next) {
-        live.chains.delete(userId);
+    const startMs = taken.startMs + trimmed.leadMs;
+    const seg = {
+      samples: trimmed.samples,
+      startMs,
+      endMs: startMs + samplesMs(trimmed.samples),
+    };
+    let q = live.stt.get(userId);
+    if (!q) {
+      q = { pending: [], running: false };
+      live.stt.set(userId, q);
+    }
+    q.pending.push(seg);
+    if (!q.running) {
+      void this.drainSpeaker(meeting, live, userId, q);
+    }
+  }
+
+  private async drainSpeaker(
+    meeting: Meeting,
+    live: Live,
+    userId: string,
+    q: SpeakerQueue,
+  ): Promise<void> {
+    q.running = true;
+    const maxMs = this.opts.config.discordMaxSegmentS * MS_PER_S;
+    try {
+      while (q.pending.length) {
+        const batch = [q.pending.shift() as PendingSegment];
+        let total = samplesMs(batch[0]?.samples ?? new Int16Array(0));
+        for (let next = q.pending[0]; next; next = q.pending[0]) {
+          const ms = samplesMs(next.samples);
+          if (total + ms > maxMs) break;
+          batch.push(q.pending.shift() as PendingSegment);
+          total += ms;
+        }
+        if (batch.length > 1) {
+          this.opts.log.info("discord: transcription backlog merged into one request", {
+            segments: batch.length,
+            audio_ms: Math.round(total),
+          });
+        }
+        const first = batch[0] as PendingSegment;
+        const last = batch[batch.length - 1] as PendingSegment;
+        await this.flush(meeting, live, userId, {
+          samples: concatSamples(batch.map((b) => b.samples)),
+          startMs: first.startMs,
+          endMs: last.endMs,
+        });
       }
-    });
+    } finally {
+      q.running = false;
+    }
   }
 
   private async flush(
