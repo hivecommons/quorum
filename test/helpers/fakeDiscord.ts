@@ -28,8 +28,15 @@ export class FakeChannel implements ChannelLike {
   sendError: Error | undefined;
   joinable = true;
   voice = true;
+  /** Permission bits the bot holds here; undefined models a channel that cannot report them. */
+  granted: bigint | undefined;
   readonly members = new Map<string, MemberLike>();
   constructor(public id: string) {}
+  permissionsFor(_user: { id: string }): { has(bit: bigint): boolean } | null {
+    const granted = this.granted;
+    if (granted === undefined) return null;
+    return { has: (bit: bigint) => (granted & bit) === bit };
+  }
   isVoiceBased(): boolean {
     return this.voice;
   }
@@ -45,7 +52,22 @@ export class FakeGuild implements GuildLike {
   commandSets: unknown[][] = [];
   commandError: Error | undefined;
   voiceAdapterCreator = { fake: true };
+  fetchMeCalls = 0;
+  fetchMeError: Error | undefined;
+  /** Runs after fetchMe caches the bot's member, so a test can model what the cache changes. */
+  onFetchMe: (() => void) | undefined;
   constructor(public id: string) {}
+  /** `me` is the bot's cached member (null = not cached); fetchMe caches it like discord.js. */
+  members = {
+    me: { id: "424242" } as unknown,
+    fetchMe: async (): Promise<unknown> => {
+      this.fetchMeCalls++;
+      if (this.fetchMeError) throw this.fetchMeError;
+      this.members.me = { id: "424242" };
+      this.onFetchMe?.();
+      return this.members.me;
+    },
+  };
   channels = {
     fetch: async (id: string) => this.channelsById.get(id) ?? null,
   };

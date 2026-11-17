@@ -20,9 +20,16 @@ export interface MemberLike {
   user: { bot: boolean; username?: string; globalName?: string | null };
 }
 
+/** The slice of discord.js's PermissionsBitField the join check reads. */
+export interface PermissionsLike {
+  has(permission: bigint, checkAdmin?: boolean): boolean;
+}
+
 export interface ChannelLike {
   id: string;
   joinable?: boolean;
+  /** The bot's effective permissions in this channel; null when its member is not cached. */
+  permissionsFor?(user: { id: string }): PermissionsLike | null;
   isVoiceBased(): boolean;
   members: { values(): Iterable<MemberLike>; get(id: string): MemberLike | undefined };
   send(text: string): Promise<unknown>;
@@ -33,6 +40,8 @@ export interface GuildLike {
   voiceAdapterCreator: unknown;
   channels: { fetch(id: string): Promise<ChannelLike | null> };
   commands: { set(commands: unknown[]): Promise<unknown> };
+  /** The bot's own member. discord.js computes `joinable` from it, so it must be cached. */
+  members?: { me: unknown; fetchMe(): Promise<unknown> };
 }
 
 export interface VoiceStateLike {

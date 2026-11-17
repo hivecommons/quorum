@@ -285,6 +285,67 @@ describe("Discord voice", () => {
     expect(H().q.quorum.registry.all()).toEqual([]);
   });
 
+  it("names the missing voice permissions when the bot cannot join", async () => {
+    await boot();
+    channel.joinable = false;
+    channel.granted = 1n << 10n; // View Channel only
+    expect(
+      await H().call("meeting.join", { platform: "discord", guild_id: GUILD, channel_id: CHANNEL }),
+    ).toMatchObject({
+      ok: false,
+      error: { code: "blocked", message: expect.stringContaining("missing Connect") },
+    });
+  });
+
+  it("asks for Speak too when the bot speaks", async () => {
+    await boot(ttsEnv());
+    channel.joinable = false;
+    channel.granted = 0n;
+    const res = await H().call("meeting.join", {
+      platform: "discord",
+      guild_id: GUILD,
+      channel_id: CHANNEL,
+    });
+    expect(res).toMatchObject({
+      error: {
+        code: "blocked",
+        message: expect.stringContaining("missing View Channel, Connect, Speak"),
+      },
+    });
+  });
+
+  it("names no permission when discord.js says unjoinable to an administrator", async () => {
+    await boot();
+    channel.joinable = false;
+    channel.granted = 1n << 3n; // Administrator
+    const res = await H().call("meeting.join", {
+      platform: "discord",
+      guild_id: GUILD,
+      channel_id: CHANNEL,
+    });
+    expect(res).toMatchObject({ error: { code: "blocked" } });
+    expect((res.error as { message: string }).message).not.toContain("missing");
+  });
+
+  it("fetches the bot's own member before judging the channel unjoinable", async () => {
+    await boot();
+    guild.members.me = null;
+    channel.joinable = false;
+    guild.onFetchMe = () => (channel.joinable = true);
+    await joinDiscord();
+    expect(guild.fetchMeCalls).toBe(1);
+  });
+
+  it("still answers blocked when the bot's member cannot be fetched", async () => {
+    await boot();
+    guild.members.me = null;
+    guild.fetchMeError = new Error("Unknown Member");
+    channel.joinable = false;
+    expect(
+      await H().call("meeting.join", { platform: "discord", guild_id: GUILD, channel_id: CHANNEL }),
+    ).toMatchObject({ ok: false, error: { code: "blocked" } });
+  });
+
   it("needs a transcription service", async () => {
     await boot({ QUORUM_TRANSCRIBE_URL: "" });
     expect(

@@ -172,6 +172,12 @@ export class Quorum {
           ...m.extra,
         });
       } catch (err) {
+        // Tool errors go back to the caller only; log join failures so quorum's own log names them.
+        this.opts.log.warn("meeting.join failed", {
+          platform: meeting.platform,
+          code: err instanceof QuorumError ? err.code : "join_error",
+          error: (err as Error).message,
+        });
         meeting.setState("failed", err instanceof QuorumError ? err.code : "join_error");
         this.opts.registry.remove(meeting.id);
         throw err;

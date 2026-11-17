@@ -45,6 +45,17 @@ const PLAYBACK_GRACE_MS = 5000;
 /** Gateway close code for a privileged intent the application has not enabled. */
 const DISALLOWED_INTENTS_CLOSE = 4014;
 
+/**
+ * Discord permission bits (discord.js PermissionFlagsBits) the bot needs in a voice channel,
+ * named the way the server settings name them so the owner can grant exactly what is missing.
+ */
+const PERMISSION_ADMINISTRATOR = 1n << 3n;
+const VOICE_PERMISSIONS: ReadonlyArray<readonly [bigint, string]> = [
+  [1n << 10n, "View Channel"],
+  [1n << 20n, "Connect"],
+];
+const SPEAK_PERMISSION: readonly [bigint, string] = [1n << 21n, "Speak"];
+
 export const HIVE_COMMAND = {
   name: "hive",
   description: "Ask hive to take notes in your voice channel",
@@ -211,6 +222,32 @@ export class DiscordAdapter implements PlatformAdapter {
     }
   }
 
+  /**
+   * discord.js reports a channel unjoinable when the bot's own member is not cached, which would
+   * read as a permission failure. Fetch it first; a failed fetch leaves the check to discord.js.
+   */
+  private async ensureSelfMember(guild: GuildLike): Promise<void> {
+    if (!guild.members || guild.members.me) return;
+    try {
+      await guild.members.fetchMe();
+    } catch (err) {
+      this.opts.log.warn("discord: could not fetch the bot's guild member", {
+        guild_id: guild.id,
+        error: (err as Error).message,
+      });
+    }
+  }
+
+  /** The voice permissions the bot lacks in channel, by their Discord names. */
+  private missingPermissions(channel: ChannelLike): string[] {
+    const me = this.client.user;
+    const perms = me && channel.permissionsFor ? channel.permissionsFor(me) : null;
+    if (!perms) return [];
+    if (perms.has(PERMISSION_ADMINISTRATOR, false)) return [];
+    const needed = this.opts.tts ? [...VOICE_PERMISSIONS, SPEAK_PERMISSION] : VOICE_PERMISSIONS;
+    return needed.filter(([bit]) => !perms.has(bit, false)).map(([, name]) => name);
+  }
+
   async join(meeting: Meeting, _args: JoinArgs): Promise<void> {
     this.requireReady();
     this.clearRequest(meeting.id);
@@ -227,10 +264,19 @@ export class DiscordAdapter implements PlatformAdapter {
     if (!channel?.isVoiceBased()) {
       throw new QuorumError("invalid_argument", "channel_id is not a voice channel");
     }
+    await this.ensureSelfMember(guild);
     if (channel.joinable === false) {
+      const missing = this.missingPermissions(channel);
+      const what = missing.length > 0 ? `: missing ${missing.join(", ")}` : "";
+      this.opts.log.warn("discord: cannot join voice channel", {
+        guild_id: guildId,
+        channel_id: channelId,
+        missing,
+      });
       throw new QuorumError(
         "blocked",
-        "the bot has no permission to connect to that voice channel",
+        `the bot has no permission to connect to that voice channel${what}. ` +
+          "Grant the bot's role View Channel, Connect and Speak on the channel (Edit Channel, Permissions)",
       );
     }
     meeting.setState("joining");
