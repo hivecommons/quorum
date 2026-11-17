@@ -128,6 +128,8 @@ describe("companion platform end to end", () => {
     h = await startHarness({
       QUORUM_TRANSCRIBE_URL: stt.url,
       QUORUM_TRANSCRIBE_TOKEN_FILE: writeSecret(dir, "stt", "stt-token"),
+      // One try per segment, so a scripted failure is a drop (retries: discord-units tests).
+      QUORUM_TRANSCRIBE_MAX_ATTEMPTS: "1",
       QUORUM_COMPANION_SILENCE_MS: "100",
       QUORUM_COMPANION_MIN_SPEECH_MS: "60",
       QUORUM_COMPANION_MAX_SEGMENT_S: "5",
