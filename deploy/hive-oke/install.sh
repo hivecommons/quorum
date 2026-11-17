@@ -109,6 +109,10 @@ k rollout status deploy/versitygw --timeout="$ROLLOUT_TIMEOUT"
 k wait --for=condition=complete job/versitygw-bucket --timeout=5m
 
 echo "==> CPU transcription"
+# The realtime tier first, and Ready, before Service vexa-transcription (which selects it) is
+# applied, so the live endpoint never points at Pods that are still loading a model.
+k apply -f "$HERE/transcription.yaml" -l app.kubernetes.io/name=vexa-transcription-rt
+k rollout status deploy/vexa-transcription-rt --timeout="$ROLLOUT_TIMEOUT"
 k apply -f "$HERE/transcription.yaml"
 k rollout status deploy/vexa-transcription --timeout="$ROLLOUT_TIMEOUT"
 

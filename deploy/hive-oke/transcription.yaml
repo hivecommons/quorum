@@ -1,7 +1,20 @@
-# CPU Whisper (faster-whisper, model `small`, int8) for the bots. The image is built in
-# hivecommons/vexa (quorum-images.yml) with the model baked in, so no PVC or download is needed.
-# The bot posts audio windows to http://vexa-transcription:8000/v1/audio/transcriptions with the
-# TRANSCRIPTION_SERVICE_TOKEN from Secret `vexa-admin` (the service's API_TOKEN).
+# CPU Whisper (faster-whisper, int8) in two tiers, both from the same image (built in
+# hivecommons/vexa quorum-images.yml with `small` baked in):
+#
+#   realtime  Deployment vexa-transcription-rt, model `base`, beam 1, 2 replicas. Every live
+#             consumer reaches it through Service `vexa-transcription` (the bots via meeting-api's
+#             TRANSCRIPTION_SERVICE_URL, Quorum's Discord and companion paths via
+#             QUORUM_TRANSCRIBE_URL). Measured in-cluster on a 2 s clip: about 1.6-1.9 s per
+#             request, against 8-10 s for `small` with beam 5 (the encoder dominates; beam size
+#             barely moves `small`). An init container fetches `base` at a pinned Hugging Face
+#             commit into an emptyDir; the server itself stays offline.
+#   batch     Deployment vexa-transcription, model `small`, beam 5, 1 replica, behind Service
+#             `vexa-transcription-batch`, for after-meeting transcription where quality matters
+#             more than latency.
+#
+# Both take the TRANSCRIPTION_SERVICE_TOKEN from Secret `vexa-admin` (the service's API_TOKEN).
+# Probes allow 5 s: the worker answers /health between CPU-bound requests, and the 1 s default
+# got a busy batch worker killed by its liveness probe mid-meeting.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -50,13 +63,16 @@ spec:
           startupProbe:
             httpGet: { path: /health, port: http }
             periodSeconds: 5
+            timeoutSeconds: 5
             failureThreshold: 60
           readinessProbe:
             httpGet: { path: /health, port: http }
             periodSeconds: 10
+            timeoutSeconds: 5
           livenessProbe:
             httpGet: { path: /health, port: http }
             periodSeconds: 30
+            timeoutSeconds: 5
             failureThreshold: 4
           resources:
             requests: { cpu: "2", memory: 2Gi }
@@ -66,6 +82,123 @@ spec:
             capabilities:
               drop: ["ALL"]
 ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vexa-transcription-rt
+  namespace: meetings
+  labels:
+    app.kubernetes.io/name: vexa-transcription-rt
+    app.kubernetes.io/part-of: quorum
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vexa-transcription-rt
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vexa-transcription-rt
+        app.kubernetes.io/part-of: quorum
+    spec:
+      automountServiceAccountToken: false
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: vexa-transcription-rt
+      initContainers:
+        # Fetch faster-whisper `base` at a pinned commit of Systran/faster-whisper-base into the
+        # model cache, and point the cache's refs/main at it so the offline server resolves it.
+        - name: fetch-model
+          image: ghcr.io/hivecommons/vexa-transcription-cpu:main-70859c1-quorum@sha256:700c4a862dd471fafb39d0a981ef62df946f9764472020389f33d662f49ace55
+          env:
+            - name: MODEL_REVISION
+              value: ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66
+            - name: HF_HUB_DISABLE_TELEMETRY
+              value: "1"
+          command:
+            - python3
+            - -c
+            - |
+              import os
+              from faster_whisper.utils import download_model
+              rev = os.environ["MODEL_REVISION"]
+              print(download_model("base", cache_dir="/app/models", revision=rev))
+              refs = "/app/models/models--Systran--faster-whisper-base/refs"
+              os.makedirs(refs, exist_ok=True)
+              with open(refs + "/main", "w") as f:
+                  f.write(rev)
+          volumeMounts:
+            - { name: models, mountPath: /app/models }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: "1", memory: 1Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      containers:
+        - name: transcription
+          # Same image and digest as the batch tier above.
+          image: ghcr.io/hivecommons/vexa-transcription-cpu:main-70859c1-quorum@sha256:700c4a862dd471fafb39d0a981ef62df946f9764472020389f33d662f49ace55
+          env:
+            - name: WORKER_ID
+              value: "rt"
+            - name: MODEL_SIZE
+              value: base
+            - name: DEVICE
+              value: cpu
+            - name: COMPUTE_TYPE
+              value: int8
+            # Match the CPU limit below.
+            - name: CPU_THREADS
+              value: "4"
+            # Greedy decoding: beam 5 doubles `base`'s time for no gain on short live windows.
+            - name: BEAM_SIZE
+              value: "1"
+            - name: BEST_OF
+              value: "1"
+            - name: HF_HUB_OFFLINE
+              value: "1"
+            - name: API_TOKEN
+              valueFrom:
+                secretKeyRef: { name: vexa-admin, key: TRANSCRIPTION_SERVICE_TOKEN }
+          ports:
+            - name: http
+              containerPort: 8000
+          volumeMounts:
+            - { name: models, mountPath: /app/models }
+          startupProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 4
+          resources:
+            requests: { cpu: "2", memory: 1Gi }
+            limits: { cpu: "4", memory: 2Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: models
+          emptyDir: { sizeLimit: 1Gi }
+---
+# The live endpoint: every realtime consumer calls http://vexa-transcription:8000.
 apiVersion: v1
 kind: Service
 metadata:
@@ -73,6 +206,24 @@ metadata:
   namespace: meetings
   labels:
     app.kubernetes.io/name: vexa-transcription
+    app.kubernetes.io/part-of: quorum
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: vexa-transcription-rt
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+---
+# The batch endpoint (`small`, beam 5): http://vexa-transcription-batch:8000.
+apiVersion: v1
+kind: Service
+metadata:
+  name: vexa-transcription-batch
+  namespace: meetings
+  labels:
+    app.kubernetes.io/name: vexa-transcription-batch
     app.kubernetes.io/part-of: quorum
 spec:
   type: ClusterIP

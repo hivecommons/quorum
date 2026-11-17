@@ -26,9 +26,10 @@ quorum:
   # Raising it needs node capacity: each bot is Guaranteed at runtime.workloadResources.meetingBot.
   maxConcurrentBots: 4
   # Steady-state non-bot Pods in `meetings`: gateway 2, admin-api 2, meeting-api 2, runtime 1,
-  # postgres 1, redis 1, versitygw 1, transcription 1, tts 1, searxng 1. While a rollout surges,
-  # or an ops Pod (bucket Job, smoke test) runs, it uses bot slots; a rollout waits for a free slot.
-  controlPlanePods: 13
+  # postgres 1, redis 1, versitygw 1, transcription 3 (realtime 2, batch 1), tts 1, searxng 1.
+  # While a rollout surges, or an ops Pod (bucket Job, smoke test) runs, it uses bot slots; a
+  # rollout waits for a free slot.
+  controlPlanePods: 15
   tenant:
     name: hivecommons-hive
     hostedHiveId: hosted-available-oke-11-placeholder-r05x

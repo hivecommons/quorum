@@ -9,7 +9,7 @@ Quorum (RFC #1) uses one shared Vexa control plane per cluster. On hive-oke it r
 | `namespace.yaml`     | Namespace `meetings` (Pod Security baseline in warn/audit mode)                              |
 | `values.yaml`        | Helm values for the Vexa chart, plus the `quorum` block read by `install.sh`                 |
 | `versitygw.yaml`     | In-namespace S3 endpoint (versitygw, POSIX backend on a 50Gi `oci-bv` PVC), bucket Job       |
-| `transcription.yaml` | CPU Whisper (faster-whisper `small`, int8) Deployment and Service                            |
+| `transcription.yaml` | CPU Whisper (faster-whisper, int8): realtime tier (`base`) and batch tier (`small`)          |
 | `tts.yaml`           | CPU text-to-speech (Kokoro via Kokoro-FastAPI) Deployment, Service, voice-map ConfigMap      |
 | `searxng.yaml`       | SearXNG web search for hive Betty: Deployment, Service `searxng:8080`, settings ConfigMap    |
 | `policy.yaml`        | LimitRange and gateway NetworkPolicy                                                         |
@@ -61,7 +61,17 @@ enforcing.
   also caps `services.loadbalancers` and `services.nodeports` at 0).
 - Bots: one bare Pod per meeting, created by the runtime. Each is Guaranteed at 1 CPU / 2560Mi
   (`runtime.workloadResources.meetingBot`) and pinned to `kubernetes.io/arch: arm64`.
-- Transcription: `vexa-transcription:8000`, 2-4 CPU / 2-4Gi. It needs `TRANSCRIPTION_SERVICE_TOKEN`.
+- Transcription, two tiers from one image (both need `TRANSCRIPTION_SERVICE_TOKEN`):
+  - realtime: `vexa-transcription:8000` (Deployment `vexa-transcription-rt`, 2 replicas spread
+    across nodes, model `base`, beam 1, 2-4 CPU / 1-2Gi each). The bots and Quorum's Discord and
+    companion paths call it. Measured on a 2 s clip from inside the cluster: about 1.6-1.9 s per
+    request (`small` with beam 5 took 8-10 s on the same clip; the encoder dominates, so beam
+    size barely moves `small`). `base` is fetched at a pinned Hugging Face commit by an init
+    container; the server runs offline.
+  - batch: `vexa-transcription-batch:8000` (Deployment `vexa-transcription`, 1 replica, model
+    `small`, beam 5, 2-4 CPU / 2-4Gi) for after-meeting transcription.
+  - Probes time out at 5 s: a busy worker answers `/health` late, and the 1 s default once got
+    the worker killed mid-meeting, which callers saw as 503s.
 - Text-to-speech: `vexa-tts:8880`, 1-2 CPU / 1.5-3Gi (about 1.05Gi resident idle; a short
   sentence takes about 3 s on 2 CPUs). It needs `TTS_API_TOKEN`. See Voice.
 - Web search: `searxng:8080`, 50m-500m CPU / 128-384Mi. Not part of Quorum; it is here for
@@ -152,7 +162,7 @@ GET http://searxng.meetings.svc.cluster.local:8080/search?format=json&q=<query>
 - Startup logs two harmless lines: `/etc/searxng` and `/var/cache/searxng` "not owned by
   searxng:searxng" (they are `root:searxng`; the ConfigMap is read-only and the cache is group
   writable), and "X-Forwarded-For nor X-Real-IP header is set!" once (the limiter is off).
-- Pods: it is one of the 13 `controlPlanePods` in the ResourceQuota (16 to 17 Pods when it was
+- Pods: it is one of the `controlPlanePods` in the ResourceQuota (16 to 17 Pods when it was
   added; bot slots stay 4).
 
 Smoke test (2026-11-16, from a throwaway Pod in `meetings`): `q=kubernetes`,
@@ -182,8 +192,8 @@ The smoke Pod takes a bot slot while it runs.
 ## Limits
 
 - `quorum.maxConcurrentBots: 4` in `values.yaml` is the single source. It is enforced in two places:
-  - ResourceQuota `meetings-quota` sets `pods` = `controlPlanePods` (13, including vexa-tts and
-    searxng) + 4.
+  - ResourceQuota `meetings-quota` sets `pods` = `controlPlanePods` (15, including vexa-tts, searxng
+    and the three transcription Pods) + 4.
     A quota cannot select only bot Pods, so while a rollout surges or an ops Pod runs, that Pod uses a bot slot, and
     a rollout waits for a free slot.
   - The tenant user's `max_concurrent_bots` in admin-api, set to the same value.
