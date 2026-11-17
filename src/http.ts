@@ -1,7 +1,9 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { ChunkGapError, isCompanionChannel, type CompanionAdapter } from "./companion/adapter.js";
 import type { Config } from "./config.js";
+import { QuorumError } from "./errors.js";
 import type { Logger } from "./log.js";
 import type { QuorumEvent, StateEvent } from "./meeting.js";
 import { createMcpServer } from "./mcp.js";
@@ -10,8 +12,9 @@ import { CONTRACT_VERSION, VERSION } from "./version.js";
 
 /**
  * The loopback HTTP surface: `GET /healthz` (no auth), `POST /mcp` (MCP streamable HTTP,
- * stateless, JSON responses) and `GET /events` (Server-Sent Events). Everything except
- * /healthz needs `Authorization: Bearer <token>`.
+ * stateless, JSON responses), `GET /events` (Server-Sent Events), and the companion platform's
+ * `POST /companion/audio` and `GET /companion/outbox`. Everything except /healthz needs
+ * `Authorization: Bearer <token>`.
  */
 
 const HTTP_OK = 200;
@@ -19,6 +22,7 @@ const HTTP_BAD_REQUEST = 400;
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_NOT_FOUND = 404;
 const HTTP_METHOD_NOT_ALLOWED = 405;
+const HTTP_CONFLICT = 409;
 const HTTP_TOO_LARGE = 413;
 const HTTP_INTERNAL = 500;
 const MS_PER_S = 1000;
@@ -48,19 +52,35 @@ function sendJson(
 
 class BodyTooLarge extends Error {}
 
-async function readJson(req: IncomingMessage, limit: number): Promise<unknown> {
+/** Reads the whole body; past `limit` the rest is drained (so the reply reaches the client). */
+async function readBody(req: IncomingMessage, limit: number): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
     const buf = chunk as Buffer;
     size += buf.length;
-    if (size > limit) {
-      throw new BodyTooLarge();
+    if (size <= limit) {
+      chunks.push(buf);
     }
-    chunks.push(buf);
   }
-  const text = Buffer.concat(chunks).toString("utf8");
+  if (size > limit) {
+    throw new BodyTooLarge();
+  }
+  return Buffer.concat(chunks);
+}
+
+async function readJson(req: IncomingMessage, limit: number): Promise<unknown> {
+  const text = (await readBody(req, limit)).toString("utf8");
   return text ? JSON.parse(text) : undefined;
+}
+
+/** A query parameter as a non-negative integer, or undefined when absent or malformed. */
+function nonNegativeInt(raw: string | null): number | undefined {
+  if (raw === null || !/^\d+$/.test(raw)) {
+    return undefined;
+  }
+  const n = Number(raw);
+  return Number.isSafeInteger(n) ? n : undefined;
 }
 
 export interface HttpOptions {
@@ -68,10 +88,11 @@ export interface HttpOptions {
   config: Config;
   log: Logger;
   token: string;
+  companion?: CompanionAdapter;
 }
 
 export function createHttpServer(opts: HttpOptions): Server {
-  const { quorum, config, log, token } = opts;
+  const { quorum, config, log, token, companion } = opts;
 
   async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== "POST") {
@@ -182,6 +203,98 @@ export function createHttpServer(opts: HttpOptions): Server {
     });
   }
 
+  /** The companion meeting a /companion request names, or undefined after answering an error. */
+  function companionMeeting(res: ServerResponse, url: URL) {
+    const meetingId = url.searchParams.get("meeting_id") ?? "";
+    const meeting = meetingId ? quorum.registry.get(meetingId) : undefined;
+    if (!meeting) {
+      sendJson(res, HTTP_NOT_FOUND, { error: `no meeting ${meetingId}` });
+      return undefined;
+    }
+    if (meeting.platform !== "companion") {
+      sendJson(res, HTTP_BAD_REQUEST, { error: `meeting ${meetingId} is not a companion meeting` });
+      return undefined;
+    }
+    return meeting;
+  }
+
+  function companionError(res: ServerResponse, err: unknown): void {
+    if (err instanceof ChunkGapError) {
+      sendJson(res, HTTP_CONFLICT, { error: err.message, expected_seq: err.expected });
+    } else if (err instanceof BodyTooLarge) {
+      sendJson(res, HTTP_TOO_LARGE, {
+        error: `a chunk must be at most ${config.companionMaxChunkBytes} bytes`,
+      });
+    } else if (err instanceof QuorumError) {
+      sendJson(res, err.code === "not_live" ? HTTP_CONFLICT : HTTP_BAD_REQUEST, {
+        error: err.message,
+        code: err.code,
+      });
+    } else {
+      log.error("companion request failed", { error: String(err) });
+      sendJson(res, HTTP_INTERNAL, { error: "internal error" });
+    }
+  }
+
+  async function handleCompanionAudio(
+    req: IncomingMessage,
+    res: ServerResponse,
+    url: URL,
+    adapter: CompanionAdapter,
+  ): Promise<void> {
+    if (req.method !== "POST") {
+      sendJson(res, HTTP_METHOD_NOT_ALLOWED, { error: "POST only" }, { Allow: "POST" });
+      return;
+    }
+    const channel = url.searchParams.get("channel");
+    if (!isCompanionChannel(channel)) {
+      sendJson(res, HTTP_BAD_REQUEST, { error: "channel must be call or mic" });
+      return;
+    }
+    const seq = nonNegativeInt(url.searchParams.get("seq"));
+    if (seq === undefined) {
+      sendJson(res, HTTP_BAD_REQUEST, { error: "seq must be a non-negative integer" });
+      return;
+    }
+    const meeting = companionMeeting(res, url);
+    if (!meeting) {
+      return;
+    }
+    try {
+      const body = await readBody(req, config.companionMaxChunkBytes);
+      sendJson(res, HTTP_OK, adapter.audio(meeting, channel, seq, body));
+    } catch (err) {
+      companionError(res, err);
+    }
+  }
+
+  function handleCompanionOutbox(
+    req: IncomingMessage,
+    res: ServerResponse,
+    url: URL,
+    adapter: CompanionAdapter,
+  ): void {
+    if (req.method !== "GET") {
+      sendJson(res, HTTP_METHOD_NOT_ALLOWED, { error: "GET only" }, { Allow: "GET" });
+      return;
+    }
+    const afterRaw = url.searchParams.get("after");
+    const after = afterRaw === null ? 0 : nonNegativeInt(afterRaw);
+    if (after === undefined) {
+      sendJson(res, HTTP_BAD_REQUEST, { error: "after must be a non-negative integer" });
+      return;
+    }
+    const meeting = companionMeeting(res, url);
+    if (!meeting) {
+      return;
+    }
+    try {
+      sendJson(res, HTTP_OK, adapter.outbox(meeting, after));
+    } catch (err) {
+      companionError(res, err);
+    }
+  }
+
   return createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://quorum.local");
     if (url.pathname === "/healthz") {
@@ -209,6 +322,14 @@ export function createHttpServer(opts: HttpOptions): Server {
     }
     if (url.pathname === "/events") {
       handleEvents(req, res, url);
+      return;
+    }
+    if (companion && url.pathname === "/companion/audio") {
+      void handleCompanionAudio(req, res, url, companion);
+      return;
+    }
+    if (companion && url.pathname === "/companion/outbox") {
+      handleCompanionOutbox(req, res, url, companion);
       return;
     }
     sendJson(res, HTTP_NOT_FOUND, { error: "not found" });

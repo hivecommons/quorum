@@ -13,6 +13,7 @@ Quorum runs **inside the hive container** as a child process that hive starts an
 - Discord: `QUORUM_DISCORD_TOKEN_FILE` (per-hive bot token, optional; Discord tools return `platform_unavailable` without it).
 - Whisper for Discord audio: `QUORUM_TRANSCRIBE_URL` (the shared CPU transcription service), optional `QUORUM_TRANSCRIBE_TOKEN_FILE`.
 - Speech on Discord: `QUORUM_TTS_URL` (the shared Kokoro service, OpenAI-compatible `/v1/audio/speech`), optional `QUORUM_TTS_TOKEN_FILE` (sent as `X-API-Key`), `QUORUM_TTS_VOICE` (default `af_heart`). Without `QUORUM_TTS_URL`, Discord `say` returns `platform_unavailable`.
+- Companion (desktop app audio, hivecommons/quorum-companion): always registered; needs `QUORUM_TRANSCRIBE_URL` (else `meeting.join` answers `platform_unavailable`). Limits: `QUORUM_COMPANION_MAX_CHUNK_BYTES`=131072, `QUORUM_COMPANION_SILENCE_MS`=700, `QUORUM_COMPANION_MIN_SPEECH_MS`=300, `QUORUM_COMPANION_MAX_SEGMENT_S`=20, `QUORUM_COMPANION_VAD_THRESHOLD`=500 (frame RMS on the int16 scale), `QUORUM_COMPANION_OUTBOX_MAX`=200.
 - Typed chat on Discord needs the privileged MessageContent intent, which the operator enables for the bot in the Discord developer portal. If Discord refuses it, quorum logs a warning once and connects without it: voice, transcripts and `chat.post` keep working, and no typed `chat` events arrive.
 - Every numeric limit in this file is an env var with the default shown.
 
@@ -22,7 +23,7 @@ All tools return `{ok: true, ...}` or `{ok: false, error: {code, message}}`, as 
 
 | Tool | Arguments | Result |
 |---|---|---|
-| `meeting.join` | `{url, display_name, platform?, voice?, voice_id?}` platform inferred from URL: `google_meet`, `teams`, `zoom`; a Zoom join always sends Vexa `meeting_url` (the https join link, passcode included; `https://zoom.us/j/<id>` for a bare id), which Vexa requires for Zoom; Discord uses `{platform:"discord", guild_id, channel_id}`. `voice` (default `QUORUM_VEXA_VOICE`=false) starts the bot able to speak; Vexa fixes this at join time; Discord ignores it (it can speak whenever `QUORUM_TTS_URL` is set). `voice_id` (optional, at most 100 characters) picks the TTS voice for this meeting's `say`: on Discord the Kokoro voice (default `QUORUM_TTS_VOICE`), on Vexa the `voice` sent with each speak request (Vexa's TTS default when absent). Joining a meeting quorum is already in returns that meeting (and keeps its original `voice_id`). | `{meeting_id, platform, state}` |
+| `meeting.join` | `{url, display_name, platform?, voice?, voice_id?}` platform inferred from URL: `google_meet`, `teams`, `zoom`; a Zoom join always sends Vexa `meeting_url` (the https join link, passcode included; `https://zoom.us/j/<id>` for a bare id), which Vexa requires for Zoom; Discord uses `{platform:"discord", guild_id, channel_id}`; the companion uses `{platform:"companion", display_name, host_name?}` (no url; every join starts a new meeting, live at once; `host_name`, at most 100 characters, default `Host`, names the `mic` channel's speaker). `voice` (default `QUORUM_VEXA_VOICE`=false) starts the bot able to speak; Vexa fixes this at join time; Discord ignores it (it can speak whenever `QUORUM_TTS_URL` is set). `voice_id` (optional, at most 100 characters) picks the TTS voice for this meeting's `say`: on Discord the Kokoro voice (default `QUORUM_TTS_VOICE`), on Vexa the `voice` sent with each speak request (Vexa's TTS default when absent). Joining a meeting quorum is already in returns that meeting (and keeps its original `voice_id`). | `{meeting_id, platform, state}` |
 | `meeting.leave` | `{meeting_id}` | `{state}` |
 | `meeting.status` | `{meeting_id}` | `{state, participants:[{id,name}]}` |
 | `transcript.read` | `{meeting_id, after_seq?}` | `{segments:[Segment], next_seq}` final segments only, oldest first; `next_seq` is the cursor to pass back as `after_seq` |
@@ -39,6 +40,15 @@ Live streaming: hive opens `GET /events?meeting_id=...` (Server-Sent Events, sam
 `seq` is one counter per meeting shared by segment and chat events. `start` and `end` are seconds from the session start. On Vexa platforms `speaker.id` is the display name (Vexa carries no stable participant id); on Discord it is the user id.
 
 `Segment` = the `segment` event without `type`.
+
+### Companion audio
+
+A companion meeting has no bot in any meeting: a desktop app on a person's own computer captures their meeting client's audio and their microphone, and hive relays it to quorum. Both routes take the same bearer as `/events`.
+
+- `POST /companion/audio?meeting_id=&channel=call|mic&seq=N`, body = raw 16 kHz mono s16le PCM, at most `QUORUM_COMPANION_MAX_CHUNK_BYTES`. Per channel, chunks are accepted in order from `seq=0`: a gap answers 409 `{error, expected_seq}`; a chunk at or below the last stored seq answers 200 `{seq, duplicate:true}` and is ignored (a resend after a lost reply); otherwise 200 `{seq, duplicate:false}`. 400 for a bad channel, seq or odd byte count, 404 for an unknown meeting, 409 once the meeting is no longer live, 413 for a chunk over the limit.
+- Each channel is cut into utterances at `QUORUM_COMPANION_SILENCE_MS` of silence (or at `QUORUM_COMPANION_MAX_SEGMENT_S`), utterances under `QUORUM_COMPANION_MIN_SPEECH_MS` of speech are dropped, and each one is transcribed by the shared service, one at a time per meeting. Segments are ordinary `segment` events: `speaker` is `{id:"host", name:<host_name>}` for `mic` and `{id:"call", name:"Call"}` for `call` (the meeting client mixes everyone else). `meeting.leave` transcribes any open utterance before the `ended` state.
+- `chat.post` queues the line for the companion window instead of a meeting chat. `GET /companion/outbox?meeting_id=&after=N` returns `{lines:[{seq,text,at}], next_seq}`; fetching lines marks them delivered, so `chat.post` with `confirm:true` answers `confirmed` once the companion fetched the line and `unconfirmed` after `QUORUM_CHAT_CONFIRM_TIMEOUT_MS`. Without `confirm` it answers `unconfirmed`. The outbox keeps the last `QUORUM_COMPANION_OUTBOX_MAX` lines.
+- `say` answers `platform_unavailable` (spoken replies through a virtual microphone are a later step). The companion's own consent prompt is the consent gate for these meetings; hive records it.
 
 ## 2. Spektacular live mode (hive runs it as a child)
 

@@ -6,6 +6,7 @@ import { createHttpServer } from "./http.js";
 import type { Logger } from "./log.js";
 import { Registry, type Platform } from "./meeting.js";
 import { Quorum } from "./service.js";
+import { companionAdapter } from "./companion/index.js";
 import { VexaAdapter } from "./vexa/adapter.js";
 import { VexaClient } from "./vexa/client.js";
 import { VexaStream } from "./vexa/stream.js";
@@ -77,12 +78,14 @@ export async function startQuorum(
   } else {
     log.info("QUORUM_VEXA_URL is unset: Meet, Teams and Zoom answer platform_unavailable");
   }
+  const companion = companionAdapter(config, log);
+  adapters.companion = companion;
   if (extraAdapters) {
     Object.assign(adapters, await extraAdapters({ config, registry, log }));
   }
 
   const quorum = new Quorum({ config, registry, adapters, log });
-  const server = createHttpServer({ quorum, config, log, token });
+  const server = createHttpServer({ quorum, config, log, token, companion });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(config.port, config.host, () => {

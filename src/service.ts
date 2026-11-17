@@ -153,7 +153,9 @@ export class Quorum {
       const m =
         platformArg === "discord"
           ? this.discordMeeting(args, displayName)
-          : this.urlMeeting(args, platformArg, displayName);
+          : platformArg === "companion"
+            ? this.companionMeeting(args, displayName)
+            : this.urlMeeting(args, platformArg, displayName);
       if (!m.created) {
         return { meeting_id: m.meeting.id, platform: m.meeting.platform, state: m.meeting.state };
       }
@@ -214,6 +216,27 @@ export class Quorum {
     if (parsed.meetingUrl) extra.meetingUrl = parsed.meetingUrl;
     if (parsed.teamsBaseHost) extra.teamsBaseHost = parsed.teamsBaseHost;
     return { meeting, created: true, extra };
+  }
+
+  /** A companion meeting is new on every join: the companion app starts one per call. */
+  private companionMeeting(
+    args: Args,
+    displayName: string,
+  ): { meeting: Meeting; created: boolean; extra: Record<string, string> } {
+    const hostName = optionalString(args, "host_name");
+    if (hostName !== undefined && hostName.length > DISPLAY_NAME_MAX_CHARS) {
+      throw new QuorumError(
+        "invalid_argument",
+        `host_name is longer than ${DISPLAY_NAME_MAX_CHARS} characters`,
+      );
+    }
+    this.adapter("companion");
+    const meeting = new Meeting({
+      platform: "companion",
+      bufferSize: this.opts.config.transcriptBuffer,
+      displayName,
+    });
+    return { meeting, created: true, extra: hostName ? { hostName } : {} };
   }
 
   private discordMeeting(

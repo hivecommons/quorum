@@ -32,6 +32,12 @@ export const DEFAULTS = {
   ttsTimeoutMs: 30_000,
   chatConfirmTimeoutMs: 20_000,
   chatConfirmPollMs: 500,
+  companionMaxChunkBytes: 131_072,
+  companionSilenceMs: 700,
+  companionMinSpeechMs: 300,
+  companionMaxSegmentS: 20,
+  companionVadThreshold: 500,
+  companionOutboxMax: 200,
 } as const;
 
 export type DiscordCommandScope = "guild" | "global" | "off";
@@ -71,6 +77,12 @@ export interface Config {
   discordJoinTimeoutS: number;
   discordRequestTtlS: number;
   transcribeTimeoutMs: number;
+  companionMaxChunkBytes: number;
+  companionSilenceMs: number;
+  companionMinSpeechMs: number;
+  companionMaxSegmentS: number;
+  companionVadThreshold: number;
+  companionOutboxMax: number;
   logLevel: string | undefined;
 }
 
@@ -184,6 +196,36 @@ export function loadConfig(env: Env = process.env): Config {
       env,
       "QUORUM_TRANSCRIBE_TIMEOUT_MS",
       DEFAULTS.transcribeTimeoutMs,
+    ),
+    companionMaxChunkBytes: positiveInt(
+      env,
+      "QUORUM_COMPANION_MAX_CHUNK_BYTES",
+      DEFAULTS.companionMaxChunkBytes,
+    ),
+    companionSilenceMs: positiveInt(
+      env,
+      "QUORUM_COMPANION_SILENCE_MS",
+      DEFAULTS.companionSilenceMs,
+    ),
+    companionMinSpeechMs: positiveInt(
+      env,
+      "QUORUM_COMPANION_MIN_SPEECH_MS",
+      DEFAULTS.companionMinSpeechMs,
+    ),
+    companionMaxSegmentS: positiveInt(
+      env,
+      "QUORUM_COMPANION_MAX_SEGMENT_S",
+      DEFAULTS.companionMaxSegmentS,
+    ),
+    companionVadThreshold: positiveInt(
+      env,
+      "QUORUM_COMPANION_VAD_THRESHOLD",
+      DEFAULTS.companionVadThreshold,
+    ),
+    companionOutboxMax: positiveInt(
+      env,
+      "QUORUM_COMPANION_OUTBOX_MAX",
+      DEFAULTS.companionOutboxMax,
     ),
     logLevel: optional(env, "QUORUM_LOG_LEVEL"),
   };

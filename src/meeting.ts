@@ -5,7 +5,7 @@ import type { VexaPlatform } from "./urls.js";
 /** docs/contract.md section 1 shapes. */
 export type MeetingState =
   "requested" | "joining" | "lobby" | "live" | "ended" | "failed" | "blocked";
-export type Platform = VexaPlatform | "discord";
+export type Platform = VexaPlatform | "discord" | "companion";
 
 export const TERMINAL_STATES: ReadonlySet<MeetingState> = new Set(["ended", "failed", "blocked"]);
 

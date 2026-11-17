@@ -34,4 +34,6 @@ export interface JoinArgs {
   passcode?: string;
   meetingUrl?: string;
   teamsBaseHost?: string;
+  /** Companion meetings: the name the `mic` channel's segments are attributed to. */
+  hostName?: string;
 }
