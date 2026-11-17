@@ -35,6 +35,12 @@ export function discordAdapters(
               : undefined,
           ...(config.transcribeLanguage ? { language: config.transcribeLanguage } : {}),
           timeoutMs: config.transcribeTimeoutMs,
+          hotwords: config.transcribeHotwords,
+          retry: {
+            maxAttempts: config.transcribeMaxAttempts,
+            backoffBaseMs: config.transcribeBackoffBaseMs,
+            backoffMaxMs: config.transcribeBackoffMaxMs,
+          },
         })
       : undefined;
     const tts = config.ttsUrl

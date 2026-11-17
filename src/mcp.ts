@@ -77,7 +77,11 @@ export const TOOLS = [
   },
   {
     name: "say",
-    description: "Speak text aloud in the meeting. Returns {queued:true}.",
+    description:
+      "Speak text aloud in the meeting. Lines of one meeting play one after another, never over " +
+      "each other. Returns {queued:true, duration_ms?}: duration_ms is the clip's real length " +
+      "when the platform reports it. A line the platform could not speak (for example a muted " +
+      "microphone) is platform_unavailable naming the reason.",
     inputSchema: {
       type: "object",
       properties: { meeting_id: meetingId, text: { type: "string" } },

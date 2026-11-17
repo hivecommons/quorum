@@ -117,6 +117,9 @@ describe("helpers", () => {
     expect(routeOf("/bots/zoom/123/chat/abc")).toBe(
       "/bots/{platform}/{native_id}/chat/{request_id}",
     );
+    expect(routeOf("/bots/teams/123/speak/s1")).toBe(
+      "/bots/{platform}/{native_id}/speak/{request_id}",
+    );
     expect(routeOf("/meetings/zoom/123")).toBe("/meetings/{platform}/{native_id}");
     expect(routeOf("/bots?platform=zoom")).toBe("/bots");
     expect(codeForStatus(418)).toBe("upstream_error");

@@ -12,7 +12,14 @@ import {
 } from "../src/discord/audio.js";
 import { isDisallowedIntents } from "../src/discord/adapter.js";
 import { loadDiscordRuntime } from "../src/discord/runtime.js";
-import { Transcriber, transcriptionsUrl } from "../src/discord/transcribe.js";
+import {
+  buildPrompt,
+  isRetryableStatus,
+  nameHints,
+  PROMPT_MAX_CHARS,
+  Transcriber,
+  transcriptionsUrl,
+} from "../src/discord/transcribe.js";
 import { TtsClient, speechUrl } from "../src/discord/tts.js";
 import { FakeTts, pcm24, pcm48 } from "./helpers/fakeDiscord.js";
 
@@ -184,6 +191,127 @@ describe("isDisallowedIntents", () => {
   });
 });
 
+describe("Transcriber prompt and retries", () => {
+  type Call = { form: FormData };
+  function scripted(replies: Array<Response | Error>) {
+    const calls: Call[] = [];
+    const sleeps: number[] = [];
+    const t = (maxAttempts = 4) =>
+      new Transcriber({
+        url: "http://stt",
+        token: () => undefined,
+        timeoutMs: 1000,
+        hotwords: ["Hive", "betty"],
+        retry: { maxAttempts, backoffBaseMs: 100, backoffMaxMs: 1000 },
+        random: () => 0.5,
+        sleep: async (ms) => {
+          sleeps.push(ms);
+        },
+        fetchImpl: (async (_u: string, i: RequestInit) => {
+          calls.push({ form: i.body as FormData });
+          const next = replies.shift() ?? new Response(JSON.stringify({ text: "ok" }));
+          if (next instanceof Error) throw next;
+          return next;
+        }) as unknown as typeof fetch,
+      });
+    return { t, calls, sleeps };
+  }
+
+  it("names the bot first, then its full name, then the configured hotwords", () => {
+    expect(nameHints("Betty Bee from the hive")).toEqual(["Betty", "Betty Bee from the hive"]);
+    expect(nameHints("Betty")).toEqual(["Betty"]);
+    expect(nameHints("  ")).toEqual([]);
+    expect(nameHints(undefined)).toEqual([]);
+    expect(buildPrompt([])).toBeUndefined();
+    expect(buildPrompt(["Betty", "betty", " Hive "])).toBe("Betty, Hive.");
+    const long = buildPrompt(Array.from({ length: 200 }, (_, i) => `Name${i}`)) ?? "";
+    expect(long.length).toBeLessThanOrEqual(PROMPT_MAX_CHARS);
+    expect(long.endsWith(".")).toBe(true);
+  });
+
+  it("sends the hints as the Whisper prompt on every request", async () => {
+    const { t, calls } = scripted([]);
+    expect(
+      await t().transcribe(Buffer.alloc(0), { hints: nameHints("Betty Bee from the hive") }),
+    ).toBe("ok");
+    expect(calls[0]?.form.get("prompt")).toBe("Betty, Betty Bee from the hive, Hive.");
+    expect(calls[0]?.form.get("hotwords")).toBeNull();
+    const bare = scripted([]);
+    await new Transcriber({
+      url: "http://stt",
+      token: () => undefined,
+      timeoutMs: 1000,
+      fetchImpl: (async (_u: string, i: RequestInit) => {
+        bare.calls.push({ form: i.body as FormData });
+        return new Response(JSON.stringify({ text: "x" }));
+      }) as unknown as typeof fetch,
+    }).transcribe(Buffer.alloc(0));
+    expect(bare.calls[0]?.form.get("prompt")).toBeNull();
+  });
+
+  it("retries 503, 429, 5xx and network errors with growing jittered backoff, then succeeds", async () => {
+    const { t, calls, sleeps } = scripted([
+      new Response("busy", { status: 503 }),
+      new TypeError("fetch failed"),
+      new Response("slow down", { status: 429 }),
+    ]);
+    expect(await t().transcribe(Buffer.alloc(0), { hints: ["Betty"] })).toBe("ok");
+    expect(calls).toHaveLength(4);
+    expect(calls.every((c) => c.form.get("prompt") === "Betty, Hive.")).toBe(true);
+    // base 100: attempt n waits half its window plus jitter (random 0.5): 75, 150, 300.
+    expect(sleeps).toEqual([75, 150, 300]);
+  });
+
+  it("honours Retry-After up to the backoff ceiling", async () => {
+    const { t, sleeps } = scripted([
+      new Response("busy", { status: 503, headers: { "Retry-After": "0.5" } }),
+      new Response("busy", { status: 503, headers: { "Retry-After": "30" } }),
+    ]);
+    expect(await t().transcribe(Buffer.alloc(0))).toBe("ok");
+    expect(sleeps).toEqual([500, 1000]);
+  });
+
+  it("drops only after the bounded attempts, naming how many it made", async () => {
+    const { t, calls, sleeps } = scripted([
+      new Response("busy", { status: 503 }),
+      new Response("busy", { status: 503 }),
+      new Response("busy", { status: 503 }),
+    ]);
+    await expect(t(3).transcribe(Buffer.alloc(0))).rejects.toMatchObject({
+      code: "upstream_error",
+      message: "transcription service answered 503 (gave up after 3 attempts)",
+    });
+    expect(calls).toHaveLength(3);
+    expect(sleeps).toHaveLength(2);
+  });
+
+  it("does not retry a request the service refused", async () => {
+    const { t, calls } = scripted([new Response("bad", { status: 400 })]);
+    await expect(t().transcribe(Buffer.alloc(0))).rejects.toMatchObject({
+      code: "upstream_error",
+      message: "transcription service answered 400",
+    });
+    expect(calls).toHaveLength(1);
+    expect(isRetryableStatus(429)).toBe(true);
+    expect(isRetryableStatus(500)).toBe(true);
+    expect(isRetryableStatus(599)).toBe(true);
+    expect(isRetryableStatus(404)).toBe(false);
+    expect(isRetryableStatus(600)).toBe(false);
+  });
+
+  it("caps each backoff and treats a zero attempt budget as one try", () => {
+    const capped = new Transcriber({
+      url: "http://stt",
+      token: () => undefined,
+      timeoutMs: 1,
+      retry: { maxAttempts: 0, backoffBaseMs: 100, backoffMaxMs: 250 },
+      random: () => 0.999,
+    });
+    expect(capped.backoffMs(10)).toBeLessThanOrEqual(250);
+    expect(capped.backoffMs(1)).toBeGreaterThanOrEqual(50);
+  });
+});
+
 describe("Transcriber", () => {
   it("builds the endpoint URL", () => {
     expect(transcriptionsUrl("http://stt:8000/")).toBe("http://stt:8000/v1/audio/transcriptions");
@@ -216,13 +344,14 @@ describe("Transcriber", () => {
         url: "http://stt",
         token: () => "k",
         timeoutMs: 1000,
+        retry: { maxAttempts: 1 },
         fetchImpl: f as unknown as typeof fetch,
       });
     await expect(
       mk(async () => new Response("no", { status: 503 })).transcribe(Buffer.alloc(0)),
     ).rejects.toMatchObject({
       code: "upstream_error",
-      message: expect.stringContaining("503"),
+      message: expect.stringContaining("503 (gave up after 1 attempt)"),
     });
     await expect(
       mk(async () => {

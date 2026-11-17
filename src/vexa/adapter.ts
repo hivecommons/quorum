@@ -1,4 +1,10 @@
-import type { ChatDelivery, ChatOptions, JoinArgs, PlatformAdapter } from "../adapter.js";
+import type {
+  ChatDelivery,
+  ChatOptions,
+  JoinArgs,
+  PlatformAdapter,
+  SayOutcome,
+} from "../adapter.js";
 import { DEFAULTS } from "../config.js";
 import { QuorumError } from "../errors.js";
 import type { Logger } from "../log.js";
@@ -114,6 +120,8 @@ export interface VexaAdapterOptions {
   chatConfirmTimeoutMs?: number;
   /** Interval between delivery-record reads while waiting (QUORUM_CHAT_CONFIRM_POLL_MS). */
   chatConfirmPollMs?: number;
+  /** How long a say waits for the bot to finish the line (QUORUM_SAY_CONFIRM_TIMEOUT_MS). */
+  sayConfirmTimeoutMs?: number;
 }
 
 /** Delivery-record statuses Vexa answers for one chat send (meeting-api chat_delivery.py). */
@@ -121,9 +129,21 @@ const CHAT_QUEUED = "queued";
 const CHAT_POSTED = "posted";
 const CHAT_FAILED = "failed";
 
+/** Playback-record statuses Vexa answers for one spoken line. */
+const SPEAK_SPOKEN = "spoken";
+const SPEAK_FAILED = "failed";
+const SPEAK_PENDING = new Set(["queued", "speaking"]);
+
+/** A non-negative whole number of milliseconds, or undefined. */
+function durationOf(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.round(v) : undefined;
+}
+
 export class VexaAdapter implements PlatformAdapter {
   private readonly echoes = new Map<string, number>();
   private readonly chatSeen = new WeakMap<Meeting, Set<string>>();
+  /** Each meeting's last queued say, settled either way: the next say starts after it. */
+  private readonly sayQueues = new WeakMap<Meeting, Promise<void>>();
 
   constructor(private readonly opts: VexaAdapterOptions) {
     opts.stream.on("frame", (f: VexaFrame) => {
@@ -275,15 +295,33 @@ export class VexaAdapter implements PlatformAdapter {
     }
   }
 
-  async say(meeting: Meeting, text: string): Promise<void> {
+  /**
+   * Speaks one line, strictly after the meeting's previous line has finished: each say waits for
+   * the one before it to settle (spoken, failed, or no verdict in time) before it is sent.
+   */
+  say(meeting: Meeting, text: string): Promise<SayOutcome> {
+    const prev = this.sayQueues.get(meeting) ?? Promise.resolve();
+    const run = prev.then(() => this.speakOne(meeting, text));
+    this.sayQueues.set(
+      meeting,
+      run.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return run;
+  }
+
+  private async speakOne(meeting: Meeting, text: string): Promise<SayOutcome> {
     if (!meeting.voice) {
       throw new QuorumError(
         "platform_unavailable",
         "the bot joined without voice; join with voice:true to speak",
       );
     }
+    let r: { request_id?: string; duration_ms?: number };
     try {
-      await this.opts.client.speak(
+      r = await this.opts.client.speak(
         meeting.platform,
         meeting.nativeId as string,
         text,
@@ -297,6 +335,57 @@ export class VexaAdapter implements PlatformAdapter {
         throw new QuorumError("platform_unavailable", `speak is not available: ${err.detail}`);
       }
       throw err;
+    }
+    const requestId = typeof r.request_id === "string" && r.request_id ? r.request_id : undefined;
+    const queuedDuration = durationOf(r.duration_ms);
+    if (!requestId) {
+      return queuedDuration === undefined ? {} : { durationMs: queuedDuration };
+    }
+    return this.awaitSpoken(meeting, requestId, queuedDuration);
+  }
+
+  /**
+   * Reads the line's playback record until the bot settles it. `spoken` resolves with its
+   * duration; `failed` throws platform_unavailable naming the bot's reason (for example
+   * `mic_muted`); no verdict in time, or a Vexa without the status route, resolves with what the
+   * send itself said.
+   */
+  private async awaitSpoken(
+    meeting: Meeting,
+    requestId: string,
+    queuedDuration: number | undefined,
+  ): Promise<SayOutcome> {
+    const fallback = queuedDuration === undefined ? {} : { durationMs: queuedDuration };
+    const deadline = Date.now() + (this.opts.sayConfirmTimeoutMs ?? DEFAULTS.sayConfirmTimeoutMs);
+    const pollMs = this.opts.chatConfirmPollMs ?? DEFAULTS.chatConfirmPollMs;
+    for (;;) {
+      let rec: { status?: string; reason?: string; duration_ms?: number };
+      try {
+        rec = await this.opts.client.speakStatus(
+          meeting.platform,
+          meeting.nativeId as string,
+          requestId,
+        );
+      } catch (err) {
+        if (!(err instanceof VexaHttpError && err.status === VEXA_STATUS.HTTP_NOT_FOUND)) {
+          this.opts.log.warn("speech playback could not be read", { error: String(err) });
+        }
+        return fallback;
+      }
+      const duration = durationOf(rec.duration_ms) ?? queuedDuration;
+      if (rec.status === SPEAK_SPOKEN) {
+        return duration === undefined ? {} : { durationMs: duration };
+      }
+      if (rec.status === SPEAK_FAILED) {
+        throw new QuorumError(
+          "platform_unavailable",
+          `the line was not spoken: ${rec.reason || "unknown"}`,
+        );
+      }
+      if (!SPEAK_PENDING.has(rec.status ?? "") || Date.now() + pollMs > deadline) {
+        return duration === undefined ? {} : { durationMs: duration };
+      }
+      await new Promise((res) => setTimeout(res, pollMs));
     }
   }
 

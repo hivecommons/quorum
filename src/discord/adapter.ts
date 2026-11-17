@@ -1,4 +1,4 @@
-import type { ChatDelivery, JoinArgs, PlatformAdapter } from "../adapter.js";
+import type { ChatDelivery, JoinArgs, PlatformAdapter, SayOutcome } from "../adapter.js";
 import type { Config } from "../config.js";
 import { QuorumError } from "../errors.js";
 import type { Logger } from "../log.js";
@@ -9,11 +9,12 @@ import {
   OPUS_FRAME_MS,
   OPUS_FRAME_SAMPLES,
   pcmFrames,
+  PLAYBACK_BYTES_PER_S,
   toMono16k,
   upsampleToStereo48k,
   Utterance,
 } from "./audio.js";
-import type { Transcriber } from "./transcribe.js";
+import { nameHints, type Transcriber } from "./transcribe.js";
 import type { TtsClient } from "./tts.js";
 import type {
   AudioPlayerLike,
@@ -76,6 +77,9 @@ interface Live {
   /** Clips in `say` order; each resolves to 48 kHz stereo PCM, or undefined if synthesis failed. */
   clips: Promise<Buffer | undefined>[];
   playing: boolean;
+  /** One transcription chain per speaker, so a retried segment never lands after that speaker's
+   *  next one. */
+  chains: Map<string, Promise<void>>;
 }
 
 export interface DiscordAdapterOptions {
@@ -103,7 +107,8 @@ export function isDisallowedIntents(err: unknown): boolean {
 
 function nameOf(
   member:
-    { displayName?: string; user?: { username?: string; globalName?: string | null } } | undefined,
+    | { displayName?: string; user?: { username?: string; globalName?: string | null } }
+    | undefined,
   id: string,
 ): string {
   return member?.displayName || member?.user?.globalName || member?.user?.username || `user ${id}`;
@@ -307,6 +312,7 @@ export class DiscordAdapter implements PlatformAdapter {
       player: undefined,
       clips: [],
       playing: false,
+      chains: new Map(),
     };
     if (this.opts.tts) {
       const player = voice.createAudioPlayer();
@@ -428,13 +434,13 @@ export class DiscordAdapter implements PlatformAdapter {
         return;
       }
       if (utterance.durationMs >= maxMs) {
-        void this.flush(meeting, live, userId, utterance);
+        this.enqueueFlush(meeting, live, userId, utterance);
       }
     });
     const done = (): void => {
       live.listening.delete(userId);
       decoder.delete?.();
-      void this.flush(meeting, live, userId, utterance);
+      this.enqueueFlush(meeting, live, userId, utterance);
     };
     stream.once("end", done);
     stream.once("error", (err: Error) => {
@@ -443,20 +449,34 @@ export class DiscordAdapter implements PlatformAdapter {
     });
   }
 
+  /** Takes the utterance's audio now and transcribes it after the speaker's earlier segments. */
+  private enqueueFlush(meeting: Meeting, live: Live, userId: string, utterance: Utterance): void {
+    const tooShort = utterance.durationMs < this.opts.config.discordMinSegmentMs;
+    const taken = utterance.take();
+    if (tooShort || taken.samples.length === 0) {
+      return;
+    }
+    const prev = live.chains.get(userId) ?? Promise.resolve();
+    const next = prev.then(() => this.flush(meeting, live, userId, taken));
+    live.chains.set(userId, next);
+    void next.finally(() => {
+      if (live.chains.get(userId) === next) {
+        live.chains.delete(userId);
+      }
+    });
+  }
+
   private async flush(
     meeting: Meeting,
     live: Live,
     userId: string,
-    utterance: Utterance,
+    { samples, startMs, endMs }: { samples: Int16Array; startMs: number; endMs: number },
   ): Promise<void> {
-    const tooShort = utterance.durationMs < this.opts.config.discordMinSegmentMs;
-    const { samples, startMs, endMs } = utterance.take();
-    if (tooShort || samples.length === 0) {
-      return;
-    }
     let text: string;
     try {
-      text = await (this.opts.transcriber as Transcriber).transcribe(encodeWav(samples));
+      text = await (this.opts.transcriber as Transcriber).transcribe(encodeWav(samples), {
+        hints: nameHints(meeting.displayName),
+      });
     } catch (err) {
       this.opts.log.warn("discord: transcription failed; segment dropped", { error: String(err) });
       return;
@@ -515,7 +535,7 @@ export class DiscordAdapter implements PlatformAdapter {
    * Synthesizes `text` and queues it behind earlier clips. Resolves once the audio is ready (so a
    * TTS failure answers upstream_error); playback continues in the background.
    */
-  async say(meeting: Meeting, text: string): Promise<void> {
+  async say(meeting: Meeting, text: string): Promise<SayOutcome> {
     const tts = this.opts.tts;
     if (!tts) {
       throw new QuorumError(
@@ -531,7 +551,8 @@ export class DiscordAdapter implements PlatformAdapter {
     const clip = tts.synthesize(text, voice).then(upsampleToStereo48k);
     live.clips.push(clip.catch(() => undefined));
     void this.drain(meeting, live);
-    await clip;
+    const pcm = await clip;
+    return { durationMs: Math.round((pcm.length / PLAYBACK_BYTES_PER_S) * MS_PER_S) };
   }
 
   private async drain(meeting: Meeting, live: Live): Promise<void> {

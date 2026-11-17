@@ -1,7 +1,7 @@
 import type { ChatDelivery, ChatOptions, JoinArgs, PlatformAdapter } from "../adapter.js";
 import type { Config } from "../config.js";
 import { encodeWav } from "../discord/audio.js";
-import type { Transcriber } from "../discord/transcribe.js";
+import { nameHints, type Transcriber } from "../discord/transcribe.js";
 import { QuorumError } from "../errors.js";
 import type { Logger } from "../log.js";
 import type { Meeting, Person } from "../meeting.js";
@@ -155,7 +155,9 @@ export class CompanionAdapter implements PlatformAdapter {
   ): Promise<void> {
     let text: string;
     try {
-      text = await (this.opts.transcriber as Transcriber).transcribe(encodeWav(u.samples));
+      text = await (this.opts.transcriber as Transcriber).transcribe(encodeWav(u.samples), {
+        hints: nameHints(meeting.displayName),
+      });
     } catch (err) {
       this.opts.log.warn("companion: transcription failed; segment dropped", {
         error: String(err),

@@ -331,14 +331,18 @@ export class Quorum {
     });
   }
 
-  say(raw: unknown): Promise<ToolResult<{ queued: true }>> {
+  say(raw: unknown): Promise<ToolResult<{ queued: true; duration_ms?: number }>> {
     return this.run(async () => {
       const args = asArgs(raw);
       const m = this.meeting(args);
       const text = boundedText(args, this.opts.config.sayMaxChars);
       this.requireLive(m);
-      await this.adapter(m.platform).say(m, text);
-      return { queued: true as const };
+      const out = await this.adapter(m.platform).say(m, text);
+      const durationMs = out ? out.durationMs : undefined;
+      return {
+        queued: true as const,
+        ...(durationMs === undefined ? {} : { duration_ms: durationMs }),
+      };
     });
   }
 

@@ -17,6 +17,12 @@ export function companionAdapter(config: Config, log: Logger): CompanionAdapter 
             : undefined,
         ...(config.transcribeLanguage ? { language: config.transcribeLanguage } : {}),
         timeoutMs: config.transcribeTimeoutMs,
+        hotwords: config.transcribeHotwords,
+        retry: {
+          maxAttempts: config.transcribeMaxAttempts,
+          backoffBaseMs: config.transcribeBackoffBaseMs,
+          backoffMaxMs: config.transcribeBackoffMaxMs,
+        },
       })
     : undefined;
   return new CompanionAdapter({ config, log, transcriber });

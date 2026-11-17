@@ -14,9 +14,19 @@ export interface PlatformAdapter {
    * line (Discord) and `unconfirmed` that it only accepted it (Vexa).
    */
   chat(meeting: Meeting, text: string, opts?: ChatOptions): Promise<ChatDelivery>;
-  say(meeting: Meeting, text: string): Promise<void>;
+  /**
+   * Speaks a line. Lines of one meeting play one after another, never over each other. Resolves
+   * with the clip's real length when the platform reports it; throws when the platform reports
+   * the line could not be spoken (for example a muted microphone).
+   */
+  say(meeting: Meeting, text: string): Promise<SayOutcome | void>;
   /** Erases the transcript upstream (quorum clears its own buffer afterwards). */
   erase(meeting: Meeting): Promise<void>;
+}
+
+export interface SayOutcome {
+  /** The spoken clip's real length, when the platform knows it. */
+  durationMs?: number;
 }
 
 export interface ChatOptions {

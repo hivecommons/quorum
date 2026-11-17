@@ -18,6 +18,8 @@ const UPSAMPLING = DISCORD_SAMPLE_RATE / TTS_SAMPLE_RATE;
 export const OPUS_FRAME_MS = 20;
 export const OPUS_FRAME_SAMPLES = (DISCORD_SAMPLE_RATE * OPUS_FRAME_MS) / MS_PER_S;
 export const OPUS_FRAME_BYTES = OPUS_FRAME_SAMPLES * DISCORD_CHANNELS * BYTES_PER_SAMPLE;
+/** Bytes of 48 kHz stereo s16le per second of playback. */
+export const PLAYBACK_BYTES_PER_S = DISCORD_SAMPLE_RATE * DISCORD_CHANNELS * BYTES_PER_SAMPLE;
 
 /** 48 kHz interleaved stereo s16le to 16 kHz mono, averaging each 3-frame block of both channels. */
 export function toMono16k(pcm: Buffer): Int16Array {

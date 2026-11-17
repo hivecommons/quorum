@@ -28,10 +28,14 @@ export const DEFAULTS = {
   discordJoinTimeoutS: 20,
   discordRequestTtlS: 300,
   transcribeTimeoutMs: 60_000,
+  transcribeMaxAttempts: 4,
+  transcribeBackoffBaseMs: 250,
+  transcribeBackoffMaxMs: 4000,
   ttsVoice: "af_heart",
   ttsTimeoutMs: 30_000,
-  chatConfirmTimeoutMs: 20_000,
+  chatConfirmTimeoutMs: 30_000,
   chatConfirmPollMs: 500,
+  sayConfirmTimeoutMs: 60_000,
   companionMaxChunkBytes: 131_072,
   companionSilenceMs: 700,
   companionMinSpeechMs: 300,
@@ -54,6 +58,8 @@ export interface Config {
   transcribeUrl: string | undefined;
   transcribeTokenFile: string | undefined;
   transcribeLanguage: string | undefined;
+  /** Extra names for the transcription prompt (QUORUM_TRANSCRIBE_HOTWORDS, comma-separated). */
+  transcribeHotwords: string[];
   ttsUrl: string | undefined;
   ttsTokenFile: string | undefined;
   ttsVoice: string;
@@ -61,6 +67,7 @@ export interface Config {
   chatMaxChars: number;
   chatConfirmTimeoutMs: number;
   chatConfirmPollMs: number;
+  sayConfirmTimeoutMs: number;
   sayMaxChars: number;
   transcriptBuffer: number;
   lobbyTimeoutS: number;
@@ -77,6 +84,9 @@ export interface Config {
   discordJoinTimeoutS: number;
   discordRequestTtlS: number;
   transcribeTimeoutMs: number;
+  transcribeMaxAttempts: number;
+  transcribeBackoffBaseMs: number;
+  transcribeBackoffMaxMs: number;
   companionMaxChunkBytes: number;
   companionSilenceMs: number;
   companionMinSpeechMs: number;
@@ -150,6 +160,10 @@ export function loadConfig(env: Env = process.env): Config {
     transcribeUrl: optional(env, "QUORUM_TRANSCRIBE_URL")?.replace(/\/+$/, ""),
     transcribeTokenFile: optional(env, "QUORUM_TRANSCRIBE_TOKEN_FILE"),
     transcribeLanguage: optional(env, "QUORUM_TRANSCRIBE_LANGUAGE"),
+    transcribeHotwords: (optional(env, "QUORUM_TRANSCRIBE_HOTWORDS") ?? "")
+      .split(",")
+      .map((w) => w.trim())
+      .filter(Boolean),
     ttsUrl: optional(env, "QUORUM_TTS_URL")?.replace(/\/+$/, ""),
     ttsTokenFile: optional(env, "QUORUM_TTS_TOKEN_FILE"),
     ttsVoice: optional(env, "QUORUM_TTS_VOICE") ?? DEFAULTS.ttsVoice,
@@ -161,6 +175,11 @@ export function loadConfig(env: Env = process.env): Config {
       DEFAULTS.chatConfirmTimeoutMs,
     ),
     chatConfirmPollMs: positiveInt(env, "QUORUM_CHAT_CONFIRM_POLL_MS", DEFAULTS.chatConfirmPollMs),
+    sayConfirmTimeoutMs: positiveInt(
+      env,
+      "QUORUM_SAY_CONFIRM_TIMEOUT_MS",
+      DEFAULTS.sayConfirmTimeoutMs,
+    ),
     sayMaxChars: positiveInt(env, "QUORUM_SAY_MAX_CHARS", DEFAULTS.sayMaxChars),
     transcriptBuffer: positiveInt(env, "QUORUM_TRANSCRIPT_BUFFER", DEFAULTS.transcriptBuffer),
     lobbyTimeoutS: positiveInt(env, "QUORUM_LOBBY_TIMEOUT_S", DEFAULTS.lobbyTimeoutS),
@@ -196,6 +215,21 @@ export function loadConfig(env: Env = process.env): Config {
       env,
       "QUORUM_TRANSCRIBE_TIMEOUT_MS",
       DEFAULTS.transcribeTimeoutMs,
+    ),
+    transcribeMaxAttempts: positiveInt(
+      env,
+      "QUORUM_TRANSCRIBE_MAX_ATTEMPTS",
+      DEFAULTS.transcribeMaxAttempts,
+    ),
+    transcribeBackoffBaseMs: positiveInt(
+      env,
+      "QUORUM_TRANSCRIBE_BACKOFF_BASE_MS",
+      DEFAULTS.transcribeBackoffBaseMs,
+    ),
+    transcribeBackoffMaxMs: positiveInt(
+      env,
+      "QUORUM_TRANSCRIBE_BACKOFF_MAX_MS",
+      DEFAULTS.transcribeBackoffMaxMs,
     ),
     companionMaxChunkBytes: positiveInt(
       env,

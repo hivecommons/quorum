@@ -29,6 +29,7 @@ beforeEach(async () => {
     QUORUM_CHAT_MAX_CHARS: "20",
     QUORUM_CHAT_CONFIRM_TIMEOUT_MS: "200",
     QUORUM_CHAT_CONFIRM_POLL_MS: "10",
+    QUORUM_SAY_CONFIRM_TIMEOUT_MS: "300",
     QUORUM_LOBBY_TIMEOUT_S: "90",
   });
 });
@@ -605,6 +606,88 @@ describe("chat.post and say", () => {
       });
     }
   });
+  it("plays says strictly one after another and reports the clip's real duration", async () => {
+    const id = await goLive();
+    const live = h.q.quorum.registry.get(id);
+    if (live) live.voice = true;
+    let n = 0;
+    fake.on("POST", /\/speak$/, () => ({
+      status: 200,
+      body: { status: "queued", request_id: `s${++n}` },
+    }));
+    let reads1 = 0;
+    fake.on("GET", /\/speak\/s1$/, () => {
+      reads1 += 1;
+      return {
+        status: 200,
+        body: reads1 < 4 ? { status: "speaking" } : { status: "spoken", duration_ms: 1840.4 },
+      };
+    });
+    fake.on("GET", /\/speak\/s2$/, { status: 200, body: { status: "spoken", duration_ms: 610 } });
+    const first = h.call("say", { meeting_id: id, text: "One moment." });
+    const second = h.call("say", { meeting_id: id, text: "Here is the answer." });
+    expect(await first).toEqual({ ok: true, queued: true, duration_ms: 1840 });
+    expect(await second).toEqual({ ok: true, queued: true, duration_ms: 610 });
+    const order = fake.requests
+      .filter((r) => r.path.includes("/speak"))
+      .map((r) => `${r.method} ${r.path.replace(/^.*\/speak/, "speak")}`);
+    // The second line is sent only once the first was reported spoken.
+    expect(order).toEqual([
+      "POST speak",
+      "GET speak/s1",
+      "GET speak/s1",
+      "GET speak/s1",
+      "GET speak/s1",
+      "POST speak",
+      "GET speak/s2",
+    ]);
+  });
+
+  it("answers platform_unavailable naming the bot's reason when a line was not spoken", async () => {
+    const id = await goLive();
+    const live = h.q.quorum.registry.get(id);
+    if (live) live.voice = true;
+    fake.on("POST", /\/speak$/, { status: 200, body: { status: "queued", request_id: "m1" } });
+    fake.on("GET", /\/speak\/m1$/, {
+      status: 200,
+      body: { status: "failed", reason: "mic_muted" },
+    });
+    const r = await h.call("say", { meeting_id: id, text: "Betty is taking notes." });
+    expect(r).toEqual({
+      ok: false,
+      error: { code: "platform_unavailable", message: "the line was not spoken: mic_muted" },
+    });
+    // A refusal at the speak route itself passes the bot's detail through the same code.
+    fake.on("POST", /\/speak$/, { status: 409, body: { detail: "mic_muted" } });
+    expect(await h.call("say", { meeting_id: id, text: "again" })).toEqual({
+      ok: false,
+      error: { code: "platform_unavailable", message: "speak is not available: mic_muted" },
+    });
+    // A failed line does not block the next one.
+    fake.on("POST", /\/speak$/, { status: 200, body: { status: "queued", duration_ms: 900 } });
+    expect(await h.call("say", { meeting_id: id, text: "next" })).toEqual({
+      ok: true,
+      queued: true,
+      duration_ms: 900,
+    });
+  });
+
+  it.each([
+    ["this Vexa has no playback route", { status: 404, body: { detail: "Not Found" } }],
+    ["the bot never settles the line", { status: 200, body: { status: "speaking" } }],
+    ["Vexa reads an unknown status", { status: 200, body: { status: "mystery" } }],
+  ])("resolves without a duration when %s", async (_why, reply) => {
+    const id = await goLive();
+    const live = h.q.quorum.registry.get(id);
+    if (live) live.voice = true;
+    fake.on("POST", /\/speak$/, { status: 200, body: { status: "queued", request_id: "u1" } });
+    fake.on("GET", /\/speak\/u1$/, reply);
+    expect(await h.call("say", { meeting_id: id, text: "hello" })).toEqual({
+      ok: true,
+      queued: true,
+    });
+  });
+
   it("passes voice_id through as the per-speak voice and validates it", async () => {
     expect(
       await h.call("meeting.join", { url: MEET, display_name: "Hive", voice_id: "x".repeat(101) }),

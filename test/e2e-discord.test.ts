@@ -141,7 +141,7 @@ describe("Discord voice", () => {
   });
 
   it("cuts long speech at QUORUM_DISCORD_MAX_SEGMENT_S, drops short blips, bad packets and failed transcriptions", async () => {
-    await boot();
+    await boot({ QUORUM_TRANSCRIBE_MAX_ATTEMPTS: "1" });
     const id = await joinDiscord();
     const conn = rt.connections[0];
     conn?.speaking.emit("start", "500002");
@@ -170,6 +170,70 @@ describe("Discord voice", () => {
     await until(() => stt.bodies.length === 3);
     await new Promise((r) => setTimeout(r, 50));
     expect((await H().call("transcript.read", { meeting_id: id })).segments).toHaveLength(1);
+  });
+
+  it("prompts Whisper with the bot's name and retries a busy service before keeping the segment", async () => {
+    await boot({
+      QUORUM_TRANSCRIBE_BACKOFF_BASE_MS: "1",
+      QUORUM_TRANSCRIBE_BACKOFF_MAX_MS: "5",
+      QUORUM_TRANSCRIBE_HOTWORDS: "Hive",
+    });
+    const id = await joinDiscord({ display_name: "Betty Bee from the hive" });
+    stt.replies.push({ status: 503, body: "busy" }, { status: 502, body: "bad gateway" });
+    const conn = rt.connections[0];
+    conn?.speaking.emit("start", "500001");
+    const s = conn?.streams.get("500001");
+    for (let i = 0; i < 25; i++) s?.emit("data", pcm48(20));
+    s?.emit("end");
+    await until(() => stt.bodies.length === 3);
+    await new Promise((r) => setTimeout(r, 50));
+    const segs = (await H().call("transcript.read", { meeting_id: id })).segments as {
+      text: string;
+    }[];
+    expect(segs.map((x) => x.text)).toEqual(["hello from discord"]);
+    for (const b of stt.bodies) {
+      const form = b.body.toString("latin1");
+      expect(form).toContain('name="prompt"');
+      expect(form).toContain("Betty, Betty Bee from the hive, Hive.");
+    }
+  });
+
+  it("drops a segment only after the bounded attempts and keeps each speaker's order", async () => {
+    await boot({
+      QUORUM_TRANSCRIBE_MAX_ATTEMPTS: "2",
+      QUORUM_TRANSCRIBE_BACKOFF_BASE_MS: "20",
+      QUORUM_TRANSCRIBE_BACKOFF_MAX_MS: "40",
+    });
+    const id = await joinDiscord({ display_name: "Betty" });
+    const conn = rt.connections[0];
+    // First segment: one 503, then answered "one" on the retry. Second: answered "two" at once,
+    // but it is only sent after the first settled, so the transcript reads in spoken order.
+    stt.replies.push({ status: 503, body: "busy" }, { status: 200, body: { text: "one" } });
+    stt.replies.push({ status: 200, body: { text: "two" } });
+    conn?.speaking.emit("start", "500001");
+    let s = conn?.streams.get("500001");
+    for (let i = 0; i < 25; i++) s?.emit("data", pcm48(20));
+    s?.emit("end");
+    conn?.speaking.emit("start", "500001");
+    s = conn?.streams.get("500001");
+    for (let i = 0; i < 25; i++) s?.emit("data", pcm48(20));
+    s?.emit("end");
+    await until(() => stt.bodies.length === 3);
+    await new Promise((r) => setTimeout(r, 50));
+    let segs = (await H().call("transcript.read", { meeting_id: id })).segments as {
+      text: string;
+    }[];
+    expect(segs.map((x) => x.text)).toEqual(["one", "two"]);
+
+    stt.replies.push({ status: 503, body: "busy" }, { status: 503, body: "still busy" });
+    conn?.speaking.emit("start", "500001");
+    s = conn?.streams.get("500001");
+    for (let i = 0; i < 25; i++) s?.emit("data", pcm48(20));
+    s?.emit("end");
+    await until(() => stt.bodies.length === 5);
+    await new Promise((r) => setTimeout(r, 50));
+    segs = (await H().call("transcript.read", { meeting_id: id })).segments as { text: string }[];
+    expect(segs.map((x) => x.text)).toEqual(["one", "two"]);
   });
 
   it("tracks people joining and leaving the channel", async () => {
@@ -381,9 +445,11 @@ describe("Discord speech", () => {
     expect(conn?.players).toEqual([player()]);
     const pcm = pcm24(Array.from({ length: 600 }, (_, i) => i));
     tts.replies.push({ status: 200, body: pcm });
+    // 600 samples at 24 kHz mono = 25 ms of audio.
     expect(await H().call("say", { meeting_id: id, text: "Hello, I am Betty." })).toEqual({
       ok: true,
       queued: true,
+      duration_ms: 25,
     });
     expect(tts.requests[0]).toMatchObject({
       url: "/v1/audio/speech",

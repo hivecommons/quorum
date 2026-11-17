@@ -177,11 +177,39 @@ export class VexaClient {
     return (await this.request<{ status?: string; reason?: string }>("GET", path)).data ?? {};
   }
 
-  async speak(platform: string, nativeId: string, text: string, voice?: string): Promise<void> {
-    await this.request("POST", botPath(platform, nativeId) + "/speak", {
-      text,
-      ...(voice ? { voice } : {}),
-    });
+  /**
+   * Queues one spoken line. A Vexa that tracks speech answers a `request_id` (and may already know
+   * the clip's `duration_ms`); an older one answers only `{status: "queued"}`.
+   */
+  async speak(
+    platform: string,
+    nativeId: string,
+    text: string,
+    voice?: string,
+  ): Promise<{ request_id?: string; duration_ms?: number }> {
+    const { data } = await this.request<{ request_id?: string; duration_ms?: number }>(
+      "POST",
+      botPath(platform, nativeId) + "/speak",
+      { text, ...(voice ? { voice } : {}) },
+    );
+    return data ?? {};
+  }
+
+  /**
+   * The playback record of one spoken line (`GET /bots/{platform}/{native_id}/speak/{request_id}`):
+   * `queued`, `speaking`, `spoken` (with `duration_ms`, the clip's real length), or `failed` with
+   * the bot's reason (for example `mic_muted`).
+   */
+  async speakStatus(
+    platform: string,
+    nativeId: string,
+    requestId: string,
+  ): Promise<{ status?: string; reason?: string; duration_ms?: number }> {
+    const path = botPath(platform, nativeId) + "/speak/" + encodeURIComponent(requestId);
+    return (
+      (await this.request<{ status?: string; reason?: string; duration_ms?: number }>("GET", path))
+        .data ?? {}
+    );
   }
 
   async deleteMeeting(platform: string, nativeId: string): Promise<void> {
@@ -209,7 +237,7 @@ export function routeOf(path: string): string {
   const [base = ""] = path.split("?");
   return base
     .replace(/^\/(bots|meetings)\/[^/]+\/[^/]+/, "/$1/{platform}/{native_id}")
-    .replace(/\/chat\/[^/]+$/, "/chat/{request_id}");
+    .replace(/\/(chat|speak)\/[^/]+$/, "/$1/{request_id}");
 }
 
 export const VEXA_STATUS = {
