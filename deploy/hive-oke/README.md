@@ -13,6 +13,7 @@ Quorum (RFC #1) uses one shared Vexa control plane per cluster. On hive-oke it r
 | `tts.yaml`           | CPU text-to-speech (Kokoro via Kokoro-FastAPI) Deployment, Service, voice-map ConfigMap      |
 | `searxng.yaml`       | SearXNG web search for hive Betty: Deployment, Service `searxng:8080`, settings ConfigMap    |
 | `policy.yaml`        | LimitRange and gateway NetworkPolicy                                                         |
+| `prepull.yaml`       | Meeting-bot image pre-puller DaemonSet in namespace `meetings-prepull` (outside the bot quota) |
 | `install.sh`         | Idempotent install/upgrade: Secrets, policy, ResourceQuota, storage, STT, TTS, search, Helm  |
 | `smoke.sh`           | Smoke test with the tenant key from a throwaway Pod (includes a direct TTS call)             |
 | `smoke_api.py`       | The API half of the smoke test (health, `/ws`, chat, speak), run inside that Pod             |
@@ -33,7 +34,7 @@ are on upstream `main`, and upstream publishes control-plane images only for rel
 | admin-api                                | `ghcr.io/hivecommons/vexa-admin-api:main-70859c1-quorum`                         |
 | meeting-api                              | `ghcr.io/hivecommons/vexa-meeting-api:main-70859c1-quorum`                       |
 | runtime                                  | `ghcr.io/hivecommons/vexa-runtime:main-70859c1-quorum`                           |
-| meeting bot                              | `ghcr.io/hivecommons/vexa-bot:main-70859c1-quorum`                               |
+| meeting bot (from vexa 2b16ec1)          | `ghcr.io/hivecommons/vexa-bot:main-2b16ec1-quorum`                               |
 | CPU transcription                        | `ghcr.io/hivecommons/vexa-transcription-cpu:main-70859c1-quorum`                 |
 | agent-api, agent-worker (pinned, unused) | `ghcr.io/hivecommons/vexa-agent-api`, `vexa-agent-worker` `:main-70859c1-quorum` |
 | mcp (pinned, disabled)                   | `ghcr.io/hivecommons/vexa-mcp:main-70859c1-quorum`                               |

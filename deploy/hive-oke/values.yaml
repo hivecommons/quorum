@@ -118,7 +118,11 @@ runtime:
   image:
     repository: ghcr.io/hivecommons/vexa-runtime
     tag: main-70859c1-quorum@sha256:e463689e8fdc7225aec0ab6ef1360c33d04f7fb57d97b4e1f34a8404ac2082fc
-  browserImage: ghcr.io/hivecommons/vexa-bot:main-70859c1-quorum@sha256:47be95ad388e7475a08c29fc66b0d504180b336189f2c4f78b29249fa67e9189
+  # The meeting bot alone is ahead of quorum.vexaCommit: hivecommons/vexa 2b16ec1 (vexa#10, #11:
+  # Teams audio reaches STT within seconds, speak only into a confirmed-open mic, serial speech,
+  # Teams chat send/read). The chart and every other image are unchanged between the two commits.
+  # install.sh also pre-pulls this image on every bot node (prepull.yaml).
+  browserImage: ghcr.io/hivecommons/vexa-bot:main-2b16ec1-quorum@sha256:85af06246e469a3695086636f09f6d34979991d7f2247208ebbe8e6972d9f416
   # Agent workers are not used by Quorum (agentApi is off); pinned anyway so nothing is mutable.
   agentImage: ghcr.io/hivecommons/vexa-agent-api:main-70859c1-quorum@sha256:61b76d9cd2508ea4ad31e6c9df49ab1b44097711233d9b61d84fc798c966eb81
   agentWorkerImage: ghcr.io/hivecommons/vexa-agent-worker:main-70859c1-quorum@sha256:1ee0d6bdd3c16c984cbb5ec0766f4ca5e563f4c8a5a06e6bd3c9754c4352ff3d

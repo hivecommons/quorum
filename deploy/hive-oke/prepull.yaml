@@ -1,0 +1,63 @@
+# Meeting-bot image pre-puller. Template: install.sh renders __BOT_IMAGE__ from
+# runtime.browserImage and __NODE_SELECTOR__ from runtime.nodeSelector in values.yaml, so it pulls
+# exactly the pinned bot image onto exactly the nodes bot Pods can schedule to, and follows every pin
+# bump. A bot Pod landing on a node without the image otherwise sits in ContainerCreating for over a
+# minute while the multi-GB image pulls, and the join waits on it.
+#
+# Its own namespace: DaemonSet Pods (one per node) would otherwise count against `meetings-quota`
+# and take bot slots. The init container pulls the image and exits; a pause container holds the Pod.
+# Bot Pods carry no tolerations or affinity, only the nodeSelector, so neither does this.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: meetings-prepull
+  labels:
+    app.kubernetes.io/part-of: quorum
+    pod-security.kubernetes.io/enforce: baseline
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: vexa-bot-prepull
+  namespace: meetings-prepull
+  labels:
+    app.kubernetes.io/part-of: quorum
+    app.kubernetes.io/name: vexa-bot-prepull
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vexa-bot-prepull
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Pull the new image on every node at once; nothing serves traffic here.
+      maxUnavailable: 100%
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: quorum
+        app.kubernetes.io/name: vexa-bot-prepull
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 0
+      nodeSelector: __NODE_SELECTOR__
+      initContainers:
+        - name: pull-bot-image
+          image: __BOT_IMAGE__
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c", "exit 0"]
+          resources:
+            requests: { cpu: 1m, memory: 8Mi }
+            limits: { cpu: 100m, memory: 64Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.10@sha256:ee6521f290b2168b6e0935a181d4cff9be1ac3f505666ef0e3c98fae8199917a
+          resources:
+            requests: { cpu: 1m, memory: 8Mi }
+            limits: { cpu: 10m, memory: 16Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65535

@@ -124,6 +124,13 @@ echo "==> web search for hive Betty (SearXNG)"
 k apply -f "$HERE/searxng.yaml"
 k rollout status deploy/searxng --timeout="$ROLLOUT_TIMEOUT"
 
+echo "==> meeting-bot image pre-puller (every node a bot Pod can schedule to)"
+BOT_IMAGE="$(val runtime.browserImage)"
+BOT_NODE_SELECTOR="$(python3 -c "import json,yaml; print(json.dumps(yaml.safe_load(open('$VALUES'))['runtime'].get('nodeSelector') or {}))")"
+sed -e "s|__BOT_IMAGE__|$BOT_IMAGE|" -e "s|__NODE_SELECTOR__|$BOT_NODE_SELECTOR|" "$HERE/prepull.yaml" \
+  | kubectl --context "$CTX" apply -f -
+kubectl --context "$CTX" -n meetings-prepull rollout status ds/vexa-bot-prepull --timeout="$ROLLOUT_TIMEOUT"
+
 echo "==> helm release $RELEASE"
 helm --kube-context "$CTX" upgrade --install "$RELEASE" "$VEXA_CHART" -n "$NS" \
   -f "$VALUES" --wait --timeout "$ROLLOUT_TIMEOUT"
