@@ -30,11 +30,11 @@ are on upstream `main`, and upstream publishes control-plane images only for rel
 | Component                                | Image                                                                            |
 | ---------------------------------------- | -------------------------------------------------------------------------------- |
 | Chart                                    | `deploy/helm/charts/vexa` at hivecommons/vexa 70859c1 (chart 0.13.4)             |
-| gateway                                  | `ghcr.io/hivecommons/vexa-gateway:main-70859c1-quorum`                           |
+| gateway                                  | `ghcr.io/hivecommons/vexa-gateway:main-d40e078-quorum`                           |
 | admin-api                                | `ghcr.io/hivecommons/vexa-admin-api:main-70859c1-quorum`                         |
-| meeting-api                              | `ghcr.io/hivecommons/vexa-meeting-api:main-70859c1-quorum`                       |
+| meeting-api                              | `ghcr.io/hivecommons/vexa-meeting-api:main-d40e078-quorum`                       |
 | runtime                                  | `ghcr.io/hivecommons/vexa-runtime:main-70859c1-quorum`                           |
-| meeting bot (from vexa 2b16ec1)          | `ghcr.io/hivecommons/vexa-bot:main-2b16ec1-quorum`                               |
+| meeting bot (from vexa d40e078)          | `ghcr.io/hivecommons/vexa-bot:main-d40e078-quorum`                               |
 | CPU transcription                        | `ghcr.io/hivecommons/vexa-transcription-cpu:main-70859c1-quorum`                 |
 | agent-api, agent-worker (pinned, unused) | `ghcr.io/hivecommons/vexa-agent-api`, `vexa-agent-worker` `:main-70859c1-quorum` |
 | mcp (pinned, disabled)                   | `ghcr.io/hivecommons/vexa-mcp:main-70859c1-quorum`                               |

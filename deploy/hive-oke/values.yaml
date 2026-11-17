@@ -78,7 +78,7 @@ gateway:
   replicaCount: 2
   image:
     repository: ghcr.io/hivecommons/vexa-gateway
-    tag: main-70859c1-quorum@sha256:e633389f107280d20e727b54142a9e7d99dbc2f32256450d7a690db7c93fdc3c
+    tag: main-d40e078-quorum@sha256:d814fa6910858f9f60625c716be9d9008c7a4a8239b12562398b6ca0ba8874d1
   service:
     type: ClusterIP
 
@@ -92,7 +92,7 @@ meetingApi:
   replicaCount: 2
   image:
     repository: ghcr.io/hivecommons/vexa-meeting-api
-    tag: main-70859c1-quorum@sha256:7a2e2c1fd03a95861c82227d4fd9f0c360149e4cce34f695066b1d1e33226ae6
+    tag: main-d40e078-quorum@sha256:0a661f5f09dd51bedd85ae84cea693f8c757d8e6a45a1255101f6515386aec0a
   # Participants see this name; it says the bot takes notes (RFC: behaviour in the meeting).
   defaultBotName: "Hive notes (AI notetaker)"
   transcriptionServiceUrl: http://vexa-transcription:8000
@@ -118,11 +118,14 @@ runtime:
   image:
     repository: ghcr.io/hivecommons/vexa-runtime
     tag: main-70859c1-quorum@sha256:e463689e8fdc7225aec0ab6ef1360c33d04f7fb57d97b4e1f34a8404ac2082fc
-  # The meeting bot alone is ahead of quorum.vexaCommit: hivecommons/vexa 2b16ec1 (vexa#10, #11:
-  # Teams audio reaches STT within seconds, speak only into a confirmed-open mic, serial speech,
-  # Teams chat send/read). The chart and every other image are unchanged between the two commits.
-  # install.sh also pre-pulls this image on every bot node (prepull.yaml).
-  browserImage: ghcr.io/hivecommons/vexa-bot:main-2b16ec1-quorum@sha256:85af06246e469a3695086636f09f6d34979991d7f2247208ebbe8e6972d9f416
+  # The gateway, meeting-api and the meeting bot are ahead of quorum.vexaCommit, at hivecommons/vexa
+  # d40e078 (vexa#10 to #13: Teams audio reaches STT within seconds, speak only into a
+  # confirmed-open mic, serial speech, Teams chat send/read, faster Meet chat send, and the speak
+  # result: POST /speak returns request_id, GET /speak/{request_id} reports
+  # queued|speaking|spoken (duration_ms)|failed (reason)). The chart and every other image are
+  # unchanged between the two commits. install.sh also pre-pulls this image on every bot node
+  # (prepull.yaml).
+  browserImage: ghcr.io/hivecommons/vexa-bot:main-d40e078-quorum@sha256:666e911322a523ec63b82dd78c5e380a12263582ff7fd520136658c8cfcf400c
   # Agent workers are not used by Quorum (agentApi is off); pinned anyway so nothing is mutable.
   agentImage: ghcr.io/hivecommons/vexa-agent-api:main-70859c1-quorum@sha256:61b76d9cd2508ea4ad31e6c9df49ab1b44097711233d9b61d84fc798c966eb81
   agentWorkerImage: ghcr.io/hivecommons/vexa-agent-worker:main-70859c1-quorum@sha256:1ee0d6bdd3c16c984cbb5ec0766f4ca5e563f4c8a5a06e6bd3c9754c4352ff3d
