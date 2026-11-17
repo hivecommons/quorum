@@ -107,8 +107,7 @@ export function isDisallowedIntents(err: unknown): boolean {
 
 function nameOf(
   member:
-    | { displayName?: string; user?: { username?: string; globalName?: string | null } }
-    | undefined,
+    { displayName?: string; user?: { username?: string; globalName?: string | null } } | undefined,
   id: string,
 ): string {
   return member?.displayName || member?.user?.globalName || member?.user?.username || `user ${id}`;
