@@ -20,22 +20,23 @@ Quorum (RFC #1) uses one shared Vexa control plane per cluster. On hive-oke it r
 
 ## Versions (all pinned by tag and digest)
 
-Everything Vexa comes from one commit of hivecommons/vexa `main`: de9cb887c15d13d1a2010b96e7ebad6493191f98 (chart 0.13.4).
-It is upstream Vexa `main` plus our patches (hivecommons/vexa#2 Teams chat-write, #3 speak route).
+Everything Vexa comes from one commit of hivecommons/vexa `main`: 70859c13728b6b819a64bb68cc5a7016e1c81f92 (chart 0.13.4).
+It is upstream Vexa `main` plus our patches (hivecommons/vexa#2 Teams chat-write, #3 speak route, #7 Teams
+per-track capture, #8 Google Meet end of turn, #9 cached and prewarmed short TTS lines).
 Upstream v0.12.28 has no meeting chat-post route and its `/ws` sends no chat events; both
 are on upstream `main`, and upstream publishes control-plane images only for releases.
 
 | Component                                | Image                                                                            |
 | ---------------------------------------- | -------------------------------------------------------------------------------- |
-| Chart                                    | `deploy/helm/charts/vexa` at hivecommons/vexa de9cb88 (chart 0.13.4)             |
-| gateway                                  | `ghcr.io/hivecommons/vexa-gateway:main-de9cb88-quorum`                           |
-| admin-api                                | `ghcr.io/hivecommons/vexa-admin-api:main-de9cb88-quorum`                         |
-| meeting-api                              | `ghcr.io/hivecommons/vexa-meeting-api:main-de9cb88-quorum`                       |
-| runtime                                  | `ghcr.io/hivecommons/vexa-runtime:main-de9cb88-quorum`                           |
-| meeting bot                              | `ghcr.io/hivecommons/vexa-bot:main-de9cb88-quorum`                               |
-| CPU transcription                        | `ghcr.io/hivecommons/vexa-transcription-cpu:main-de9cb88-quorum`                 |
-| agent-api, agent-worker (pinned, unused) | `ghcr.io/hivecommons/vexa-agent-api`, `vexa-agent-worker` `:main-de9cb88-quorum` |
-| mcp (pinned, disabled)                   | `ghcr.io/hivecommons/vexa-mcp:main-de9cb88-quorum`                               |
+| Chart                                    | `deploy/helm/charts/vexa` at hivecommons/vexa 70859c1 (chart 0.13.4)             |
+| gateway                                  | `ghcr.io/hivecommons/vexa-gateway:main-70859c1-quorum`                           |
+| admin-api                                | `ghcr.io/hivecommons/vexa-admin-api:main-70859c1-quorum`                         |
+| meeting-api                              | `ghcr.io/hivecommons/vexa-meeting-api:main-70859c1-quorum`                       |
+| runtime                                  | `ghcr.io/hivecommons/vexa-runtime:main-70859c1-quorum`                           |
+| meeting bot                              | `ghcr.io/hivecommons/vexa-bot:main-70859c1-quorum`                               |
+| CPU transcription                        | `ghcr.io/hivecommons/vexa-transcription-cpu:main-70859c1-quorum`                 |
+| agent-api, agent-worker (pinned, unused) | `ghcr.io/hivecommons/vexa-agent-api`, `vexa-agent-worker` `:main-70859c1-quorum` |
+| mcp (pinned, disabled)                   | `ghcr.io/hivecommons/vexa-mcp:main-70859c1-quorum`                               |
 | postgres                                 | `docker.io/library/postgres:17.11-alpine`                                        |
 | redis                                    | `docker.io/valkey/valkey:8.1.11-alpine`                                          |
 | S3                                       | `docker.io/versity/versitygw:v1.10.0`                                            |
@@ -219,7 +220,7 @@ the upstream Kubernetes docs, it is minted at install time and kept in `vexa-adm
 
 ```bash
 git clone https://github.com/hivecommons/vexa.git /tmp/hivecommons-vexa
-git -C /tmp/hivecommons-vexa checkout de9cb887c15d13d1a2010b96e7ebad6493191f98   # quorum.vexaCommit in values.yaml
+git -C /tmp/hivecommons-vexa checkout 70859c13728b6b819a64bb68cc5a7016e1c81f92   # quorum.vexaCommit in values.yaml
 KUBE_CONTEXT=hive-oke VEXA_CHART=/tmp/hivecommons-vexa/deploy/helm/charts/vexa ./install.sh
 KUBE_CONTEXT=hive-oke ./smoke.sh
 ```

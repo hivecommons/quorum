@@ -24,8 +24,8 @@ spec:
       automountServiceAccountToken: false
       containers:
         - name: transcription
-          # main-de9cb88-quorum (linux/amd64, linux/arm64), hivecommons/vexa de9cb887c
-          image: ghcr.io/hivecommons/vexa-transcription-cpu:main-de9cb88-quorum@sha256:0d0209cac5196482ec433961bed158aad48d8ab77d7a705ede3a9a31e9cdbaaa
+          # main-70859c1-quorum (linux/amd64, linux/arm64), hivecommons/vexa 70859c137
+          image: ghcr.io/hivecommons/vexa-transcription-cpu:main-70859c1-quorum@sha256:700c4a862dd471fafb39d0a981ef62df946f9764472020389f33d662f49ace55
           env:
             - name: WORKER_ID
               value: "1"
