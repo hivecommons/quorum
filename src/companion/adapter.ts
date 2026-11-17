@@ -11,7 +11,12 @@ import { nameHints, type Transcriber } from "../discord/transcribe.js";
 import { QuorumError } from "../errors.js";
 import type { Logger } from "../log.js";
 import type { Meeting, Person } from "../meeting.js";
-import { Segmenter, type Utterance } from "./segmenter.js";
+import {
+  COMPANION_SAMPLE_RATE,
+  Segmenter,
+  type OpenUtterance,
+  type Utterance,
+} from "./segmenter.js";
 
 /**
  * The `companion` platform: a desktop app on a person's own computer captures their meeting
@@ -21,6 +26,19 @@ import { Segmenter, type Utterance } from "./segmenter.js";
  *
  * Each channel is segmented at silences (segmenter.ts) and every utterance is transcribed by the
  * shared Whisper service, one at a time per meeting so segments keep their spoken order.
+ *
+ * Early transcription: the end of an utterance is only known once QUORUM_COMPANION_SILENCE_MS of
+ * silence followed it, and the companion sends audio in chunks (one second in the desktop app), so
+ * waiting for that before asking Whisper costs up to a whole chunk plus the transcription time.
+ * Instead, as soon as an open utterance is followed by QUORUM_COMPANION_EARLY_MS of silence it is
+ * transcribed ahead of its end (padded with silence to the length it would have at its end). The
+ * answer goes out as a draft segment (`final:false`), and when
+ * the silence then runs its full length with no more speech the same answer becomes the final
+ * segment without a second request. If the speaker carries on, the early answer is dropped and the
+ * utterance is transcribed whole when it ends, so a pause never cuts anyone off.
+ *
+ * Every final segment logs one `companion: segment timing` line with the stages from the last
+ * speech sample to the segment event (see SegmentTiming).
  */
 
 export const COMPANION_CHANNELS = ["call", "mic"] as const;
@@ -50,9 +68,44 @@ export interface OutboxLine {
   at: string;
 }
 
+/** An utterance transcribed ahead of its end; `text` is undefined when the request failed. */
+interface Early {
+  startMs: number;
+  speechEndMs: number;
+  sentAt: number;
+  doneAt: number | undefined;
+  text: Promise<string | undefined>;
+}
+
 interface ChannelState {
   segmenter: Segmenter;
   nextSeq: number;
+  /**
+   * Wall clock minus audio clock, the least seen: a chunk cannot arrive before its last sample
+   * was captured, so the smallest difference is the best estimate of when audio time zero was.
+   */
+  clockOffsetMs: number;
+  /** The open utterance's last speech end and when the chunk holding it arrived. */
+  speechEndMs: number;
+  speechEndReceivedAt: number;
+  early: Early | undefined;
+}
+
+/**
+ * One final segment's stages, in milliseconds. `capture_ms` is the last speech sample to the
+ * chunk holding it arriving (the companion's own chunking and the network), `endpoint_ms` that
+ * arrival to the end of the utterance being known, `stt_ms` the transcription request that gave
+ * the text, `total_ms` the last speech sample to the segment event. `early` says the text came
+ * from the early transcription, so `stt_ms` overlapped the wait for the end.
+ */
+export interface SegmentTiming {
+  channel: CompanionChannel;
+  clip_ms: number;
+  capture_ms: number;
+  endpoint_ms: number;
+  stt_ms: number;
+  total_ms: number;
+  early: boolean;
 }
 
 interface Live {
@@ -70,6 +123,8 @@ export interface CompanionAdapterOptions {
   config: Config;
   log: Logger;
   transcriber: Transcriber | undefined;
+  /** Wall clock in ms; tests replace it. */
+  now?: () => number;
 }
 
 export interface ChunkResult {
@@ -79,8 +134,11 @@ export interface ChunkResult {
 
 export class CompanionAdapter implements PlatformAdapter {
   private readonly live = new Map<string, Live>();
+  private readonly now: () => number;
 
-  constructor(private readonly opts: CompanionAdapterOptions) {}
+  constructor(private readonly opts: CompanionAdapterOptions) {
+    this.now = opts.now ?? Date.now;
+  }
 
   async join(meeting: Meeting, args: JoinArgs): Promise<void> {
     if (!this.opts.transcriber) {
@@ -100,6 +158,10 @@ export class CompanionAdapter implements PlatformAdapter {
           threshold: config.companionVadThreshold,
         }),
         nextSeq: 0,
+        clockOffsetMs: Number.POSITIVE_INFINITY,
+        speechEndMs: 0,
+        speechEndReceivedAt: 0,
+        early: undefined,
       });
     }
     this.live.set(meeting.id, {
@@ -143,14 +205,136 @@ export class CompanionAdapter implements PlatformAdapter {
     for (let i = 0; i < pcm.length; i++) {
       pcm[i] = body.readInt16LE(i * BYTES_PER_SAMPLE);
     }
-    for (const u of state.segmenter.push(pcm)) {
-      this.enqueue(meeting, live, channel, u);
+    const receivedAt = this.now();
+    const done = state.segmenter.push(pcm);
+    state.clockOffsetMs = Math.min(state.clockOffsetMs, receivedAt - state.segmenter.receivedMs);
+    for (const u of done) {
+      this.enqueue(meeting, live, channel, state, u, receivedAt);
     }
+    this.transcribeEarly(meeting, live, channel, state, receivedAt);
     return { seq, duplicate: false };
   }
 
-  private enqueue(meeting: Meeting, live: Live, channel: CompanionChannel, u: Utterance): void {
-    live.chain = live.chain.then(() => this.transcribe(meeting, live, channel, u));
+  private speaker(live: Live, channel: CompanionChannel): Person {
+    return channel === "mic" ? { id: HOST_SPEAKER_ID, name: live.hostName } : CALL_SPEAKER;
+  }
+
+  private segmentKey(channel: CompanionChannel, u: Utterance): string {
+    return `${channel}:${Math.round(u.startMs)}`;
+  }
+
+  /** When the chunk holding the utterance's last speech arrived (an early answer may know). */
+  private speechReceivedAt(state: ChannelState, u: Utterance, fallback: number): number {
+    return state.speechEndMs === u.speechEndMs ? state.speechEndReceivedAt : fallback;
+  }
+
+  /**
+   * Starts transcribing the open utterance ahead of its end once a short silence follows its last
+   * speech, at most once per speech end, and publishes the answer as a draft while the utterance
+   * is still open.
+   */
+  private transcribeEarly(
+    meeting: Meeting,
+    live: Live,
+    channel: CompanionChannel,
+    state: ChannelState,
+    receivedAt: number,
+  ): void {
+    const open = state.segmenter.peek();
+    if (!open) {
+      return;
+    }
+    if (open.speechEndMs !== state.speechEndMs) {
+      state.speechEndMs = open.speechEndMs;
+      state.speechEndReceivedAt = receivedAt;
+    }
+    const { companionEarlyMs, companionMinSpeechMs } = this.opts.config;
+    if (
+      companionEarlyMs <= 0 ||
+      open.trailingSilenceMs < companionEarlyMs ||
+      open.speechMs < companionMinSpeechMs
+    ) {
+      return;
+    }
+    const prev = state.early;
+    if (prev && prev.startMs === open.startMs && prev.speechEndMs === open.speechEndMs) {
+      return;
+    }
+    const early: Early = {
+      startMs: open.startMs,
+      speechEndMs: open.speechEndMs,
+      sentAt: this.now(),
+      doneAt: undefined,
+      // One try: a busy service is asked again, with retries, when the utterance ends.
+      text: (this.opts.transcriber as Transcriber)
+        .transcribe(encodeWav(this.padToEnd(open)), {
+          hints: nameHints(meeting.displayName),
+          maxAttempts: 1,
+        })
+        .then(
+          (text) => text,
+          () => undefined,
+        ),
+    };
+    state.early = early;
+    void early.text.then((text) => {
+      early.doneAt = this.now();
+      const still = state.segmenter.peek();
+      if (
+        text === undefined ||
+        state.early !== early ||
+        still?.startMs !== early.startMs ||
+        still.speechEndMs !== early.speechEndMs ||
+        this.live.get(meeting.id) !== live
+      ) {
+        return;
+      }
+      meeting.addSegment({
+        key: this.segmentKey(channel, open),
+        speaker: this.speaker(live, channel),
+        text,
+        start: open.startMs / MS_PER_S,
+        end: open.endMs / MS_PER_S,
+        final: false,
+      });
+    });
+  }
+
+  /**
+   * The open utterance with digital silence added until it is followed by the full
+   * QUORUM_COMPANION_SILENCE_MS, the clip the utterance would be sent as once it ended. Whisper
+   * given a clip that stops right after the last word tends to invent a continuation.
+   */
+  private padToEnd(open: OpenUtterance): Int16Array {
+    const missingMs = this.opts.config.companionSilenceMs - open.trailingSilenceMs;
+    if (missingMs <= 0) {
+      return open.samples;
+    }
+    const pad = Math.round((missingMs * COMPANION_SAMPLE_RATE) / MS_PER_S);
+    const out = new Int16Array(open.samples.length + pad);
+    out.set(open.samples);
+    return out;
+  }
+
+  private enqueue(
+    meeting: Meeting,
+    live: Live,
+    channel: CompanionChannel,
+    state: ChannelState,
+    u: Utterance,
+    endedAt: number,
+  ): void {
+    const held = state.early;
+    const early =
+      held && held.startMs === u.startMs && held.speechEndMs === u.speechEndMs ? held : undefined;
+    state.early = undefined;
+    const speechReceivedAt = this.speechReceivedAt(state, u, endedAt);
+    const speechAt = Number.isFinite(state.clockOffsetMs)
+      ? state.clockOffsetMs + u.speechEndMs
+      : speechReceivedAt;
+    live.chain = live.chain.then(() =>
+      this.transcribe(meeting, live, channel, u, early, { speechAt, speechReceivedAt, endedAt }),
+    );
   }
 
   private async transcribe(
@@ -158,28 +342,47 @@ export class CompanionAdapter implements PlatformAdapter {
     live: Live,
     channel: CompanionChannel,
     u: Utterance,
+    early: Early | undefined,
+    at: { speechAt: number; speechReceivedAt: number; endedAt: number },
   ): Promise<void> {
-    let text: string;
-    try {
-      text = await (this.opts.transcriber as Transcriber).transcribe(encodeWav(u.samples), {
-        hints: nameHints(meeting.displayName),
-      });
-    } catch (err) {
-      this.opts.log.warn("companion: transcription failed; segment dropped", {
-        error: String(err),
-      });
-      return;
+    let text = early ? await early.text : undefined;
+    let sttMs = early ? (early.doneAt ?? this.now()) - early.sentAt : 0;
+    const reused = text !== undefined;
+    if (text === undefined) {
+      const sentAt = this.now();
+      try {
+        text = await (this.opts.transcriber as Transcriber).transcribe(encodeWav(u.samples), {
+          hints: nameHints(meeting.displayName),
+        });
+      } catch (err) {
+        this.opts.log.warn("companion: transcription failed; segment dropped", {
+          error: String(err),
+        });
+        return;
+      }
+      sttMs = this.now() - sentAt;
     }
-    const speaker: Person =
-      channel === "mic" ? { id: HOST_SPEAKER_ID, name: live.hostName } : CALL_SPEAKER;
-    meeting.addSegment({
-      key: `${channel}:${Math.round(u.startMs)}`,
-      speaker,
+    const segment = meeting.addSegment({
+      key: this.segmentKey(channel, u),
+      speaker: this.speaker(live, channel),
       text,
       start: u.startMs / MS_PER_S,
       end: u.endMs / MS_PER_S,
       final: true,
     });
+    if (!segment) {
+      return;
+    }
+    const timing: SegmentTiming = {
+      channel,
+      clip_ms: Math.round(u.endMs - u.startMs),
+      capture_ms: Math.max(0, Math.round(at.speechReceivedAt - at.speechAt)),
+      endpoint_ms: Math.max(0, Math.round(at.endedAt - at.speechReceivedAt)),
+      stt_ms: Math.round(sttMs),
+      total_ms: Math.max(0, Math.round(this.now() - at.speechAt)),
+      early: reused,
+    };
+    this.opts.log.info("companion: segment timing", { seq: segment.seq, ...timing });
   }
 
   /** Lines for the companion window after `after`; fetching them marks them delivered. */
@@ -202,7 +405,7 @@ export class CompanionAdapter implements PlatformAdapter {
       for (const [channel, state] of live.channels) {
         const u = state.segmenter.flush();
         if (u) {
-          this.enqueue(meeting, live, channel, u);
+          this.enqueue(meeting, live, channel, state, u, this.now());
         }
       }
       await live.chain;

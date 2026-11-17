@@ -8,6 +8,10 @@
  * trailing silence is kept, it helps Whisper end the sentence), and is cut at `maxSegmentMs` so a
  * monologue still produces segments while it goes on. Utterances with less than `minSpeechMs` of
  * speech frames are dropped as noise.
+ *
+ * `peek` shows the utterance still open, so the adapter can start transcribing it as soon as a
+ * short silence follows the last speech and reuse that answer if the silence then runs to
+ * `silenceMs` with no more speech (adapter.ts, early transcription).
  */
 
 export const COMPANION_SAMPLE_RATE = 16_000;
@@ -27,6 +31,14 @@ export interface Utterance {
   /** Milliseconds from the first sample this channel received. */
   startMs: number;
   endMs: number;
+  /** Where the last speech frame ended, on the same clock. */
+  speechEndMs: number;
+}
+
+/** The utterance still open: its audio so far and how long it has been quiet. */
+export interface OpenUtterance extends Utterance {
+  speechMs: number;
+  trailingSilenceMs: number;
 }
 
 function samplesToMs(n: number): number {
@@ -52,6 +64,7 @@ export class Segmenter {
   private pending: Int16Array = new Int16Array(0);
   private frames: Int16Array[] = [];
   private startSample = 0;
+  private speechEndSample = 0;
   private speechMs = 0;
   private silentMs = 0;
 
@@ -85,6 +98,7 @@ export class Segmenter {
       if (speech) {
         this.speechMs += FRAME_MS;
         this.silentMs = 0;
+        this.speechEndSample = frameStart + FRAME_SAMPLES;
       } else {
         this.silentMs += FRAME_MS;
       }
@@ -100,23 +114,46 @@ export class Segmenter {
     return done;
   }
 
+  /** Milliseconds of audio received so far. */
+  get receivedMs(): number {
+    return samplesToMs(this.received);
+  }
+
+  /** The open utterance as it stands, or undefined between utterances. Closes nothing. */
+  peek(): OpenUtterance | undefined {
+    if (!this.open) {
+      return undefined;
+    }
+    return {
+      ...this.build(this.frames),
+      speechMs: this.speechMs,
+      trailingSilenceMs: this.silentMs,
+    };
+  }
+
+  private build(frames: Int16Array[]): Utterance {
+    const samples = new Int16Array(frames.length * FRAME_SAMPLES);
+    frames.forEach((f, i) => samples.set(f, i * FRAME_SAMPLES));
+    const startMs = samplesToMs(this.startSample);
+    return {
+      samples,
+      startMs,
+      endMs: startMs + samplesToMs(samples.length),
+      speechEndMs: samplesToMs(this.speechEndSample),
+    };
+  }
+
   /** Ends the open utterance, if any (the channel stopped or the meeting ended). */
   flush(): Utterance | undefined {
     return this.open ? this.close() : undefined;
   }
 
   private close(): Utterance | undefined {
-    const frames = this.frames;
     const speechMs = this.speechMs;
+    const u = this.build(this.frames);
     this.frames = [];
     this.speechMs = 0;
     this.silentMs = 0;
-    if (speechMs < this.opts.minSpeechMs) {
-      return undefined;
-    }
-    const samples = new Int16Array(frames.length * FRAME_SAMPLES);
-    frames.forEach((f, i) => samples.set(f, i * FRAME_SAMPLES));
-    const startMs = samplesToMs(this.startSample);
-    return { samples, startMs, endMs: startMs + samplesToMs(samples.length) };
+    return speechMs < this.opts.minSpeechMs ? undefined : u;
   }
 }

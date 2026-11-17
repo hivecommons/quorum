@@ -81,6 +81,15 @@ export interface QuorumOptions {
   log: Logger;
 }
 
+/** The `say` tool's result (docs/contract.md). */
+export interface SayResult {
+  queued: true;
+  duration_ms?: number;
+  first_audio_ms?: number;
+  synth_ms?: number;
+  cached?: boolean;
+}
+
 export class Quorum {
   constructor(private readonly opts: QuorumOptions) {}
 
@@ -331,17 +340,45 @@ export class Quorum {
     });
   }
 
-  say(raw: unknown): Promise<ToolResult<{ queued: true; duration_ms?: number }>> {
+  say(raw: unknown): Promise<ToolResult<SayResult>> {
     return this.run(async () => {
       const args = asArgs(raw);
       const m = this.meeting(args);
       const text = boundedText(args, this.opts.config.sayMaxChars);
       this.requireLive(m);
-      const { durationMs } = await this.adapter(m.platform).say(m, text);
+      const out = await this.adapter(m.platform).say(m, text);
       return {
         queued: true as const,
-        ...(durationMs === undefined ? {} : { duration_ms: durationMs }),
+        ...(out.durationMs === undefined ? {} : { duration_ms: out.durationMs }),
+        ...(out.firstAudioMs === undefined ? {} : { first_audio_ms: out.firstAudioMs }),
+        ...(out.synthMs === undefined ? {} : { synth_ms: out.synthMs }),
+        ...(out.cached === undefined ? {} : { cached: out.cached }),
       };
+    });
+  }
+
+  /** Gets fixed lines ready to be spoken at once; a platform that cannot answers queued 0. */
+  sayPrewarm(raw: unknown): Promise<ToolResult<{ queued: number }>> {
+    return this.run(async () => {
+      const args = asArgs(raw);
+      const m = this.meeting(args);
+      const { sayMaxChars, sayPrewarmMaxLines } = this.opts.config;
+      const texts = args.texts;
+      if (
+        !Array.isArray(texts) ||
+        texts.length === 0 ||
+        texts.length > sayPrewarmMaxLines ||
+        !texts.every((t) => typeof t === "string" && t.trim() !== "" && t.length <= sayMaxChars)
+      ) {
+        throw new QuorumError(
+          "invalid_argument",
+          `texts must be 1 to ${sayPrewarmMaxLines} non-empty strings of at most ${sayMaxChars} characters`,
+        );
+      }
+      this.requireLive(m);
+      const adapter = this.adapter(m.platform);
+      const lines = (texts as string[]).map((t) => t.trim());
+      return { queued: adapter.prewarm ? await adapter.prewarm(m, lines) : 0 };
     });
   }
 

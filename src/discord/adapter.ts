@@ -17,6 +17,7 @@ import {
   upsampleToStereo48k,
   Utterance,
 } from "./audio.js";
+import { SpeechSynth, splitSentences } from "./speech.js";
 import { nameHints, type Transcriber } from "./transcribe.js";
 import type { TtsClient } from "./tts.js";
 import type {
@@ -80,6 +81,8 @@ interface Live {
   /** Clips in `say` order; each resolves to 48 kHz stereo PCM, or undefined if synthesis failed. */
   clips: Promise<Buffer | undefined>[];
   playing: boolean;
+  /** Settles when the queued speech has all played; undefined before the first clip. */
+  drained?: Promise<void>;
   /** Per speaker: segments waiting for transcription, and whether one is being transcribed. */
   stt: Map<string, SpeakerQueue>;
 }
@@ -132,10 +135,13 @@ export class DiscordAdapter implements PlatformAdapter {
   private readonly requestTimers = new Map<string, NodeJS.Timeout>();
   private ready = false;
   private readonly now: () => number;
+  /** Synthesis with the clip cache, shared by every meeting; undefined without QUORUM_TTS_URL. */
+  private readonly synth: SpeechSynth | undefined;
 
   constructor(private readonly opts: DiscordAdapterOptions) {
     this.client = opts.runtime.createClient({ messageContent: true });
     this.now = opts.now ?? Date.now;
+    this.synth = opts.tts ? new SpeechSynth(opts.tts, opts.config.ttsCacheMaxBytes) : undefined;
   }
 
   get isReady(): boolean {
@@ -557,7 +563,28 @@ export class DiscordAdapter implements PlatformAdapter {
     });
   }
 
+  /**
+   * Leaves once the speech already queued has played (a last "Leaving now." is heard), waiting at
+   * most QUORUM_LEAVE_DRAIN_TIMEOUT_MS. The /hive leave command and a delete stop at once.
+   */
   async leave(meeting: Meeting): Promise<void> {
+    const live = this.live.get(meeting.id);
+    const waitMs = this.opts.config.leaveDrainTimeoutMs;
+    if (live?.drained && waitMs > 0) {
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([
+        live.drained,
+        new Promise<void>((r) => {
+          timer = setTimeout(r, waitMs);
+        }),
+      ]);
+      clearTimeout(timer);
+      // The meeting may have ended while this waited (/hive leave, a delete, a lost connection):
+      // its state and reason stand.
+      if (meeting.terminal) {
+        return;
+      }
+    }
     this.leaveWith(meeting, meeting.state === "requested" ? "declined" : "left");
   }
 
@@ -595,12 +622,15 @@ export class DiscordAdapter implements PlatformAdapter {
   }
 
   /**
-   * Synthesizes `text` and queues it behind earlier clips. Resolves once the audio is ready (so a
-   * TTS failure answers upstream_error); playback continues in the background.
+   * Speaks `text` sentence by sentence, queued behind earlier lines. Sentences are synthesized one
+   * after another (cached ones cost nothing) and each plays as soon as it is ready and the one
+   * before it has finished, so the first sound comes after one sentence's synthesis. Resolves once
+   * the first sentence is ready, so a TTS failure on it answers upstream_error; a later sentence
+   * that fails is skipped and logged. `durationMs` is given when every sentence was ready by then.
    */
   async say(meeting: Meeting, text: string): Promise<SayOutcome> {
-    const tts = this.opts.tts;
-    if (!tts) {
+    const synth = this.synth;
+    if (!synth) {
       throw new QuorumError(
         "platform_unavailable",
         "QUORUM_TTS_URL is not set, so the bot cannot speak on Discord",
@@ -611,16 +641,73 @@ export class DiscordAdapter implements PlatformAdapter {
       throw new QuorumError("not_live", "the bot is not in the voice channel");
     }
     const voice = meeting.voiceId ?? this.opts.config.ttsVoice;
-    const clip = tts.synthesize(text, voice).then(upsampleToStereo48k);
-    live.clips.push(clip.catch(() => undefined));
-    void this.drain(meeting, live);
-    const pcm = await clip;
-    return { durationMs: Math.round((pcm.length / PLAYBACK_BYTES_PER_S) * MS_PER_S) };
+    const startedAt = this.now();
+    const sentences = splitSentences(text);
+    let failed = false;
+    const allCached = sentences.every((sentence) => synth.has(sentence, voice));
+    let after: Promise<unknown> = Promise.resolve();
+    const lengths: (number | undefined)[] = sentences.map(() => undefined);
+    const clips = sentences.map((sentence, i) => {
+      // One request at a time, in order: the single TTS worker gives the first sentence its all.
+      const clip: Promise<Buffer> = after.then(() => {
+        if (failed) {
+          throw new QuorumError("upstream_error", "an earlier sentence of the line failed");
+        }
+        return synth.clip(sentence, voice).pcm.then(upsampleToStereo48k);
+      });
+      after = clip.then(
+        (pcm) => {
+          lengths[i] = pcm.length;
+        },
+        (err: unknown) => {
+          if (i > 0 && !failed) {
+            this.opts.log.warn("discord: a sentence could not be synthesized; skipped", {
+              error: String(err),
+            });
+          }
+        },
+      );
+      return clip;
+    });
+    for (const clip of clips) {
+      live.clips.push(clip.catch(() => undefined));
+    }
+    this.drain(meeting, live);
+    try {
+      await clips[0];
+    } catch (err) {
+      failed = true;
+      throw err;
+    }
+    const firstAudioMs = this.now() - startedAt;
+    // Let sentences that were already cached settle, so a fully cached line reports its length.
+    await new Promise((r) => setImmediate(r));
+    const known = lengths.every((n) => n !== undefined);
+    const total = lengths.reduce<number>((sum, n) => sum + (n ?? 0), 0);
+    return {
+      ...(known ? { durationMs: Math.round((total / PLAYBACK_BYTES_PER_S) * MS_PER_S) } : {}),
+      firstAudioMs,
+      synthMs: allCached ? 0 : firstAudioMs,
+      cached: allCached,
+    };
   }
 
-  private async drain(meeting: Meeting, live: Live): Promise<void> {
-    if (live.playing) return;
-    live.playing = true;
+  /** Synthesizes fixed lines into the clip cache in the background (say.prewarm). */
+  async prewarm(meeting: Meeting, lines: string[]): Promise<number> {
+    if (!this.synth) {
+      return 0;
+    }
+    return this.synth.prewarm(lines, meeting.voiceId ?? this.opts.config.ttsVoice);
+  }
+
+  private drain(meeting: Meeting, live: Live): void {
+    if (!live.playing) {
+      live.playing = true;
+      live.drained = this.playQueued(meeting, live);
+    }
+  }
+
+  private async playQueued(meeting: Meeting, live: Live): Promise<void> {
     try {
       for (let next = live.clips.shift(); next; next = live.clips.shift()) {
         const pcm = await next;
@@ -628,6 +715,7 @@ export class DiscordAdapter implements PlatformAdapter {
         await this.play(live, pcm);
       }
     } finally {
+      // Cleared in the same tick the queue ran dry, so a say right after starts a new drain.
       live.playing = false;
     }
   }

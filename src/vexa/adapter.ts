@@ -9,7 +9,13 @@ import { DEFAULTS } from "../config.js";
 import { QuorumError } from "../errors.js";
 import type { Logger } from "../log.js";
 import type { Meeting, MeetingState, Registry } from "../meeting.js";
-import { VexaHttpError, VEXA_STATUS, type VexaClient, type VexaMeeting } from "./client.js";
+import {
+  VexaHttpError,
+  VEXA_STATUS,
+  type SpeakRecord,
+  type VexaClient,
+  type VexaMeeting,
+} from "./client.js";
 import type { VexaFrame, VexaStream } from "./stream.js";
 
 /**
@@ -122,6 +128,10 @@ export interface VexaAdapterOptions {
   chatConfirmPollMs?: number;
   /** How long a say waits for the bot to finish the line (QUORUM_SAY_CONFIRM_TIMEOUT_MS). */
   sayConfirmTimeoutMs?: number;
+  /** How often a line's playback record is read (QUORUM_SAY_POLL_MS). */
+  sayPollMs?: number;
+  /** Longest a leave waits for speech and chat on their way (QUORUM_LEAVE_DRAIN_TIMEOUT_MS). */
+  leaveDrainTimeoutMs?: number;
 }
 
 /** Delivery-record statuses Vexa answers for one chat send (meeting-api chat_delivery.py). */
@@ -144,6 +154,8 @@ export class VexaAdapter implements PlatformAdapter {
   private readonly chatSeen = new WeakMap<Meeting, Set<string>>();
   /** Each meeting's last queued say, settled either way: the next say starts after it. */
   private readonly sayQueues = new WeakMap<Meeting, Promise<void>>();
+  /** The last chat line sent without waiting for its delivery, so a leave can wait for it. */
+  private readonly lastChat = new WeakMap<Meeting, { requestId: string; text: string }>();
 
   constructor(private readonly opts: VexaAdapterOptions) {
     opts.stream.on("frame", (f: VexaFrame) => {
@@ -201,7 +213,47 @@ export class VexaAdapter implements PlatformAdapter {
     );
   }
 
+  /**
+   * Waits, at most QUORUM_LEAVE_DRAIN_TIMEOUT_MS, for the lines already on their way: the say
+   * queue (each say settles once the bot spoke it) and the last chat line's delivery. Without it
+   * the bot leaves before a last "Leaving now." is posted or heard.
+   */
+  private async drainBeforeLeave(meeting: Meeting): Promise<void> {
+    const waitMs = this.opts.leaveDrainTimeoutMs ?? DEFAULTS.leaveDrainTimeoutMs;
+    if (waitMs <= 0) {
+      return;
+    }
+    const pending: Promise<unknown>[] = [];
+    const says = this.sayQueues.get(meeting);
+    if (says) {
+      pending.push(says);
+    }
+    const chat = this.lastChat.get(meeting);
+    if (chat) {
+      this.lastChat.delete(meeting);
+      pending.push(
+        this.awaitChatDelivery(meeting, chat.requestId, chat.text).catch(() => undefined),
+      );
+    }
+    if (pending.length === 0) {
+      return;
+    }
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([
+      Promise.all(pending),
+      new Promise<void>((r) => {
+        timer = setTimeout(r, waitMs);
+      }),
+    ]);
+    clearTimeout(timer);
+  }
+
   async leave(meeting: Meeting): Promise<void> {
+    await this.drainBeforeLeave(meeting);
+    // The meeting may have ended while this waited: its state and reason stand.
+    if (meeting.terminal) {
+      return;
+    }
     try {
       await this.opts.client.stopBot(meeting.platform, meeting.nativeId as string);
     } catch (err) {
@@ -247,9 +299,14 @@ export class VexaAdapter implements PlatformAdapter {
       throw this.liveActError(err, "chat");
     }
     this.echoes.set(text.trim(), Date.now());
-    if (!opts.confirm || !requestId) {
+    if (!requestId) {
       return "unconfirmed";
     }
+    if (!opts.confirm) {
+      this.lastChat.set(meeting, { requestId, text });
+      return "unconfirmed";
+    }
+    this.lastChat.delete(meeting);
     return this.awaitChatDelivery(meeting, requestId, text);
   }
 
@@ -319,6 +376,7 @@ export class VexaAdapter implements PlatformAdapter {
         "the bot joined without voice; join with voice:true to speak",
       );
     }
+    const startedAt = Date.now();
     let r: { request_id?: string; duration_ms?: number };
     try {
       r = await this.opts.client.speak(
@@ -341,7 +399,7 @@ export class VexaAdapter implements PlatformAdapter {
     if (!requestId) {
       return queuedDuration === undefined ? {} : { durationMs: queuedDuration };
     }
-    return this.awaitSpoken(meeting, requestId, queuedDuration);
+    return this.awaitSpoken(meeting, requestId, queuedDuration, startedAt);
   }
 
   /**
@@ -354,12 +412,16 @@ export class VexaAdapter implements PlatformAdapter {
     meeting: Meeting,
     requestId: string,
     queuedDuration: number | undefined,
+    startedAt: number,
   ): Promise<SayOutcome> {
     const fallback = queuedDuration === undefined ? {} : { durationMs: queuedDuration };
     const deadline = Date.now() + (this.opts.sayConfirmTimeoutMs ?? DEFAULTS.sayConfirmTimeoutMs);
-    const pollMs = this.opts.chatConfirmPollMs ?? DEFAULTS.chatConfirmPollMs;
+    const pollMs = this.opts.sayPollMs ?? DEFAULTS.sayPollMs;
+    // When the bot does not report first audio, the first read that shows the line `speaking`
+    // (or already spoken) stands in for it, late by at most one poll.
+    let seenSpeakingMs: number | undefined;
     for (;;) {
-      let rec: { status?: string; reason?: string; duration_ms?: number };
+      let rec: SpeakRecord;
       try {
         rec = await this.opts.client.speakStatus(
           meeting.platform,
@@ -373,8 +435,18 @@ export class VexaAdapter implements PlatformAdapter {
         return fallback;
       }
       const duration = durationOf(rec.duration_ms) ?? queuedDuration;
+      if (seenSpeakingMs === undefined && rec.status !== "queued") {
+        seenSpeakingMs = Date.now() - startedAt;
+      }
       if (rec.status === SPEAK_SPOKEN) {
-        return duration === undefined ? {} : { durationMs: duration };
+        const firstAudioMs = durationOf(rec.first_audio_ms) ?? seenSpeakingMs;
+        const synthMs = durationOf(rec.synth_ms);
+        return {
+          ...(duration === undefined ? {} : { durationMs: duration }),
+          ...(firstAudioMs === undefined ? {} : { firstAudioMs }),
+          ...(synthMs === undefined ? {} : { synthMs }),
+          ...(typeof rec.cached === "boolean" ? { cached: rec.cached } : {}),
+        };
       }
       if (rec.status === SPEAK_FAILED) {
         throw new QuorumError(

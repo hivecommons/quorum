@@ -17,11 +17,13 @@ beforeAll(async () => {
 });
 afterAll(() => fake.stop());
 
-beforeEach(async () => {
-  fake.reset();
-  fake.requests.length = 0;
-  fake.rows.length = 0;
-  h = await startHarness({
+const SYNC_SETTLE_MS = 20;
+/** Whether this harness's feed has opened and its first REST read has been answered. */
+let feedSynced = false;
+
+function start(env: Record<string, string> = {}): Promise<Harness> {
+  feedSynced = false;
+  return startHarness({
     QUORUM_VEXA_URL: fake.url,
     QUORUM_VEXA_API_KEY_FILE: writeSecret(tempDir(), "vexa", fake.apiKey),
     QUORUM_VEXA_WS_BACKOFF_MIN_MS: "10",
@@ -30,8 +32,31 @@ beforeEach(async () => {
     QUORUM_CHAT_CONFIRM_TIMEOUT_MS: "200",
     QUORUM_CHAT_CONFIRM_POLL_MS: "10",
     QUORUM_SAY_CONFIRM_TIMEOUT_MS: "300",
+    QUORUM_SAY_POLL_MS: "10",
     QUORUM_LOBBY_TIMEOUT_S: "90",
+    ...env,
   });
+}
+
+/** Replaces the harness with one started with other settings. */
+async function restart(env: Record<string, string>): Promise<void> {
+  await h.close();
+  await fresh();
+  h = await start(env);
+}
+
+/** Waits for the last harness's feed to be gone, so joinMeet waits for this one's subscription. */
+async function fresh(): Promise<void> {
+  await until(() => fake.sockets.size === 0);
+  fake.subscribeFrames.length = 0;
+}
+
+beforeEach(async () => {
+  fake.reset();
+  fake.requests.length = 0;
+  fake.rows.length = 0;
+  await fresh();
+  h = await start();
 });
 afterEach(() => h.close());
 
@@ -41,6 +66,13 @@ async function joinMeet(extra: Record<string, unknown> = {}): Promise<string> {
   const r = await h.call("meeting.join", { url: MEET, display_name: "Hive notes", ...extra });
   expect(r).toMatchObject({ ok: true, platform: "google_meet", state: "requested" });
   await until(() => fake.sockets.size > 0 && fake.subscribeFrames.length > 0);
+  if (!feedSynced) {
+    // The feed opens on a harness's first join, and the adapter then reads the bot's row once
+    // over REST. Let that answer land before a test sends frames, or it could undo them.
+    await until(() => fake.requests.some((x) => x.method === "GET" && x.path.startsWith("/bots?")));
+    await new Promise((res) => setTimeout(res, SYNC_SETTLE_MS));
+    feedSynced = true;
+  }
   return r.meeting_id as string;
 }
 
@@ -626,8 +658,19 @@ describe("chat.post and say", () => {
     fake.on("GET", /\/speak\/s2$/, { status: 200, body: { status: "spoken", duration_ms: 610 } });
     const first = h.call("say", { meeting_id: id, text: "One moment." });
     const second = h.call("say", { meeting_id: id, text: "Here is the answer." });
-    expect(await first).toEqual({ ok: true, queued: true, duration_ms: 1840 });
-    expect(await second).toEqual({ ok: true, queued: true, duration_ms: 610 });
+    // This bot reports no first audio: the first read that showed the line speaking stands in.
+    expect(await first).toEqual({
+      ok: true,
+      queued: true,
+      duration_ms: 1840,
+      first_audio_ms: expect.any(Number),
+    });
+    expect(await second).toEqual({
+      ok: true,
+      queued: true,
+      duration_ms: 610,
+      first_audio_ms: expect.any(Number),
+    });
     const order = fake.requests
       .filter((r) => r.path.includes("/speak"))
       .map((r) => `${r.method} ${r.path.replace(/^.*\/speak/, "speak")}`);
@@ -641,6 +684,73 @@ describe("chat.post and say", () => {
       "POST speak",
       "GET speak/s2",
     ]);
+  });
+
+  it("reports first audio, synthesis time and cache use from the playback record", async () => {
+    const id = await goLive();
+    const live = h.q.quorum.registry.get(id);
+    if (live) live.voice = true;
+    let n = 0;
+    fake.on("POST", /\/speak$/, () => ({
+      status: 200,
+      body: { status: "queued", request_id: `f${++n}` },
+    }));
+    fake.on("GET", /\/speak\/f1$/, {
+      status: 200,
+      body: {
+        status: "spoken",
+        duration_ms: 900,
+        first_audio_ms: 412.6,
+        synth_ms: 380,
+        cached: false,
+      },
+    });
+    expect(await h.call("say", { meeting_id: id, text: "One moment." })).toEqual({
+      ok: true,
+      queued: true,
+      duration_ms: 900,
+      first_audio_ms: 413,
+      synth_ms: 380,
+      cached: false,
+    });
+    fake.on("GET", /\/speak\/f2$/, {
+      status: 200,
+      body: { status: "spoken", first_audio_ms: 3, synth_ms: 0, cached: true },
+    });
+    expect(await h.call("say", { meeting_id: id, text: "One moment." })).toEqual({
+      ok: true,
+      queued: true,
+      first_audio_ms: 3,
+      synth_ms: 0,
+      cached: true,
+    });
+
+    // Without the bot's own figure: the time until the record first read speaking, not until
+    // it read spoken. Fields of the wrong type are left out.
+    const queuedReads = 2;
+    const speakingReads = 3;
+    let reads = 0;
+    let speakingAt = 0;
+    fake.on("GET", /\/speak\/f3$/, () => {
+      reads += 1;
+      if (reads <= queuedReads) return { status: 200, body: { status: "queued" } };
+      if (reads === queuedReads + 1) speakingAt = Date.now();
+      return {
+        status: 200,
+        body:
+          reads <= queuedReads + speakingReads
+            ? { status: "speaking" }
+            : { status: "spoken", first_audio_ms: "soon", synth_ms: -1, cached: "yes" },
+      };
+    });
+    const started = Date.now();
+    const r = await h.call("say", { meeting_id: id, text: "Here it is." });
+    const total = Date.now() - started;
+    expect(r).toEqual({ ok: true, queued: true, first_audio_ms: expect.any(Number) });
+    const slackMs = 15;
+    expect(r.first_audio_ms as number).toBeLessThanOrEqual(speakingAt - started + slackMs);
+    expect(r.first_audio_ms as number).toBeLessThan(total);
+    expect(reads).toBe(queuedReads + speakingReads + 1);
   });
 
   it("answers platform_unavailable naming the bot's reason when a line was not spoken", async () => {
@@ -739,6 +849,160 @@ describe("meeting.leave, meeting.delete and status", () => {
     });
   });
 
+  it("waits on leave for a line still being spoken, then stops the bot", async () => {
+    const id = await goLive();
+    const live = h.q.quorum.registry.get(id);
+    if (live) live.voice = true;
+    fake.on("POST", /\/speak$/, { status: 200, body: { status: "queued", request_id: "L1" } });
+    const spokenAtRead = 5;
+    let reads = 0;
+    fake.on("GET", /\/speak\/L1$/, () => {
+      reads += 1;
+      return {
+        status: 200,
+        body: reads < spokenAtRead ? { status: "speaking" } : { status: "spoken" },
+      };
+    });
+    const saying = h.call("say", { meeting_id: id, text: "Leaving now." });
+    await until(() => fake.requests.some((r) => r.method === "POST" && r.path.endsWith("/speak")));
+    expect(await h.call("meeting.leave", { meeting_id: id })).toEqual({ ok: true, state: "ended" });
+    expect(await saying).toMatchObject({ ok: true });
+    const order = fake.requests
+      .filter((r) => r.path.includes("/speak") || r.method === "DELETE")
+      .map(
+        (r) => `${r.method} ${r.path.replace(/^.*\/speak/, "speak").replace(/^\/bots.*/, "bot")}`,
+      );
+    // The bot is stopped only after the line was reported spoken.
+    expect(order).toEqual([
+      "POST speak",
+      ...Array.from({ length: spokenAtRead }, () => "GET speak/L1"),
+      "DELETE bot",
+    ]);
+  });
+
+  it("waits on leave for the last unconfirmed chat line to be delivered", async () => {
+    const id = await goLive();
+    const postedAtRead = 4;
+    let reads = 0;
+    fake.on("GET", /\/chat\/req1$/, () => {
+      reads += 1;
+      return { status: 200, body: { status: reads < postedAtRead ? "queued" : "posted" } };
+    });
+    expect(await h.call("chat.post", { meeting_id: id, text: "Leaving now." })).toMatchObject({
+      delivery: "unconfirmed",
+    });
+    expect(reads).toBe(0);
+    expect(await h.call("meeting.leave", { meeting_id: id })).toEqual({ ok: true, state: "ended" });
+    const order = fake.requests
+      .filter((r) => /\/chat\//.test(r.path) || r.method === "DELETE")
+      .map((r) => r.method);
+    expect(order).toEqual([...Array.from({ length: postedAtRead }, () => "GET"), "DELETE"]);
+  });
+
+  it("leaves all the same when the last chat line failed", async () => {
+    const id = await goLive();
+    fake.on("GET", /\/chat\/req1$/, { status: 200, body: { status: "failed", reason: "gone" } });
+    await h.call("chat.post", { meeting_id: id, text: "Leaving now." });
+    expect(await h.call("meeting.leave", { meeting_id: id })).toEqual({ ok: true, state: "ended" });
+    expect(fake.requests.filter((r) => /\/chat\//.test(r.path))).toHaveLength(1);
+  });
+
+  it("does not wait on leave for a chat line that chat.post already confirmed", async () => {
+    const id2 = await goLive();
+    // Posted, then posted again with confirm: the delivery was already awaited by chat.post.
+    await h.call("chat.post", { meeting_id: id2, text: "first" });
+    expect(
+      await h.call("chat.post", { meeting_id: id2, text: "second", confirm: true }),
+    ).toMatchObject({ delivery: "confirmed" });
+    const before = fake.requests.filter((r) => /\/chat\//.test(r.path)).length;
+    expect(await h.call("meeting.leave", { meeting_id: id2 })).toEqual({
+      ok: true,
+      state: "ended",
+    });
+    expect(fake.requests.filter((r) => /\/chat\//.test(r.path))).toHaveLength(before);
+  });
+
+  it("bounds the wait on leave by QUORUM_LEAVE_DRAIN_TIMEOUT_MS", async () => {
+    const drainMs = 100;
+    await restart({
+      QUORUM_LEAVE_DRAIN_TIMEOUT_MS: String(drainMs),
+      QUORUM_SAY_CONFIRM_TIMEOUT_MS: "3000",
+      QUORUM_CHAT_CONFIRM_TIMEOUT_MS: "3000",
+    });
+    const id = await goLive();
+    const live = h.q.quorum.registry.get(id);
+    if (live) live.voice = true;
+    fake.on("POST", /\/speak$/, { status: 200, body: { status: "queued", request_id: "B1" } });
+    let spoken = false;
+    fake.on("GET", /\/speak\/B1$/, () => ({
+      status: 200,
+      body: { status: spoken ? "spoken" : "speaking" },
+    }));
+    fake.on("GET", /\/chat\/req1$/, () => ({
+      status: 200,
+      body: { status: spoken ? "posted" : "queued" },
+    }));
+    await h.call("chat.post", { meeting_id: id, text: "Leaving now." });
+    let said = false;
+    const saying = h.call("say", { meeting_id: id, text: "Leaving now." }).then((r) => {
+      said = true;
+      return r;
+    });
+    await until(() => fake.requests.some((r) => r.method === "POST" && r.path.endsWith("/speak")));
+    const started = Date.now();
+    expect(await h.call("meeting.leave", { meeting_id: id })).toEqual({ ok: true, state: "ended" });
+    // Timers may fire a millisecond early.
+    expect(Date.now() - started).toBeGreaterThanOrEqual(drainMs - 5);
+    // Neither the line nor the chat delivery had settled: the leave did not wait for them.
+    expect(said).toBe(false);
+    expect(fake.requests.filter((r) => r.method === "DELETE")).toHaveLength(1);
+    // Let the abandoned reads settle before the next test.
+    spoken = true;
+    expect(await saying).toMatchObject({ ok: true });
+    await new Promise((r) => setTimeout(r, 40));
+  });
+
+  it("does not wait at all with QUORUM_LEAVE_DRAIN_TIMEOUT_MS=0", async () => {
+    await restart({ QUORUM_LEAVE_DRAIN_TIMEOUT_MS: "0" });
+    const id = await goLive();
+    fake.on("GET", /\/chat\/req1$/, { status: 200, body: { status: "queued" } });
+    await h.call("chat.post", { meeting_id: id, text: "Leaving now." });
+    expect(await h.call("meeting.leave", { meeting_id: id })).toEqual({ ok: true, state: "ended" });
+    expect(fake.requests.some((r) => /\/chat\//.test(r.path))).toBe(false);
+  });
+
+  it("keeps the state of a meeting that ended while a leave was waiting", async () => {
+    const id = await goLive();
+    const sse = await openSse(`${h.q.url}/events?meeting_id=${id}`);
+    const live = h.q.quorum.registry.get(id);
+    if (live) live.voice = true;
+    fake.on("POST", /\/speak$/, { status: 200, body: { status: "queued", request_id: "E1" } });
+    let spoken = false;
+    fake.on("GET", /\/speak\/E1$/, () => ({
+      status: 200,
+      body: { status: spoken ? "spoken" : "speaking" },
+    }));
+    const saying = h.call("say", { meeting_id: id, text: "Leaving now." });
+    await until(() => fake.requests.some((r) => r.method === "POST" && r.path.endsWith("/speak")));
+    const leaving = h.call("meeting.leave", { meeting_id: id });
+    // Everyone else left and Vexa ended the meeting while the leave waited for the line.
+    fake.rows.forEach((r) => {
+      r.status = "completed";
+      r.completion_reason = "left_alone";
+    });
+    fake.broadcast(status("completed"));
+    await until(() => h.q.quorum.registry.get(id)?.terminal === true);
+    const reason = h.q.quorum.registry.get(id)?.reason;
+    spoken = true;
+    expect(await leaving).toEqual({ ok: true, state: "ended" });
+    await saying;
+    expect(h.q.quorum.registry.get(id)?.reason).toBe(reason);
+    expect(fake.requests.some((r) => r.method === "DELETE")).toBe(false);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(sse.events.filter((e) => e.type === "state" && e.state === "ended")).toHaveLength(1);
+    sse.close();
+  });
+
   it("deletes upstream, forgets the meeting and closes its event stream", async () => {
     const id = await goLive();
     const sse = await openSse(`${h.q.url}/events?meeting_id=${id}`);
@@ -800,7 +1064,7 @@ describe("meeting.leave, meeting.delete and status", () => {
 });
 
 describe("tool surface", () => {
-  it("lists the seven tools and rejects unknown ones", async () => {
+  it("lists the eight tools and rejects unknown ones", async () => {
     const tools = await h.raw.listTools();
     expect(tools.tools.map((t) => t.name)).toEqual([
       "meeting.join",
@@ -809,8 +1073,20 @@ describe("tool surface", () => {
       "transcript.read",
       "chat.post",
       "say",
+      "say.prewarm",
       "meeting.delete",
     ]);
+    const prewarm = tools.tools.find((t) => t.name === "say.prewarm");
+    expect(prewarm?.inputSchema).toMatchObject({
+      required: ["meeting_id", "texts"],
+      properties: { texts: { type: "array", items: { type: "string" } } },
+    });
+    // Vexa synthesizes its own speech: there is nothing for quorum to prepare.
+    const id = await goLive();
+    expect(await h.call("say.prewarm", { meeting_id: id, texts: ["Leaving now."] })).toEqual({
+      ok: true,
+      queued: 0,
+    });
     const res = await h.raw.callTool({ name: "meeting.nope", arguments: {} });
     expect(res.isError).toBe(true);
     expect(res.structuredContent).toMatchObject({ ok: false, error: { code: "invalid_argument" } });

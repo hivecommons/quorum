@@ -11,12 +11,14 @@ import { QuorumError } from "./errors.js";
 
 /**
  * Words a meeting with hive's attendant says that Whisper mishears without a hint ("pull request"
- * as "full requests", "Betty leave" as "Betty Lee"), and the hive's repository names. Sent with
+ * as "full requests", "Betty leave" as "Betty Lee", "hive queue" as "high school", "Kubernetes"
+ * as "Cuba needs"), the hive's repository names and the project's vocabulary. Sent with
  * every transcription request as prompt and hotwords; QUORUM_TRANSCRIBE_HOTWORDS replaces it.
  */
 export const DEFAULT_TRANSCRIBE_HOTWORDS =
-  "Betty, leave, pull request, PR, issue, board pressure, hive, crux, dibs, docs, " +
-  "homebrew-hive, hotshot, pluk, promptargs, rationguard, quorum, vexa, quorum-companion";
+  "Betty, hive, hive queue, leave, pull request, PR, issue, board pressure, crux, dibs, docs, " +
+  "homebrew-hive, hotshot, pluk, promptargs, rationguard, quorum, vexa, quorum-companion, " +
+  "Kubernetes, KubeCon, CNCF, Spektacular, Spek, Plaud, RFC, inbox, spoke, hub";
 
 export const DEFAULTS = {
   listen: "127.0.0.1:8765",
@@ -43,11 +45,16 @@ export const DEFAULTS = {
   transcribeBackoffMaxMs: 4000,
   ttsVoice: "af_heart",
   ttsTimeoutMs: 30_000,
+  ttsCacheMaxBytes: 33_554_432,
+  leaveDrainTimeoutMs: 8000,
+  sayPrewarmMaxLines: 32,
   chatConfirmTimeoutMs: 30_000,
   chatConfirmPollMs: 500,
   sayConfirmTimeoutMs: 60_000,
+  sayPollMs: 200,
   companionMaxChunkBytes: 131_072,
   companionSilenceMs: 500,
+  companionEarlyMs: 100,
   companionMinSpeechMs: 300,
   companionMaxSegmentS: 20,
   companionVadThreshold: 500,
@@ -74,11 +81,19 @@ export interface Config {
   ttsTokenFile: string | undefined;
   ttsVoice: string;
   ttsTimeoutMs: number;
+  /** Most synthesized speech kept for reuse (QUORUM_TTS_CACHE_MAX_BYTES; 24 kHz mono PCM). */
+  ttsCacheMaxBytes: number;
+  /** Longest a leave waits for speech and chat already on their way (QUORUM_LEAVE_DRAIN_TIMEOUT_MS). */
+  leaveDrainTimeoutMs: number;
+  /** Most lines one say.prewarm call may name (QUORUM_SAY_PREWARM_MAX_LINES). */
+  sayPrewarmMaxLines: number;
   chatMaxChars: number;
   chatConfirmTimeoutMs: number;
   chatConfirmPollMs: number;
   sayConfirmTimeoutMs: number;
   sayMaxChars: number;
+  /** How often a spoken line's playback record is read on Vexa (QUORUM_SAY_POLL_MS). */
+  sayPollMs: number;
   transcriptBuffer: number;
   lobbyTimeoutS: number;
   vexaTimeoutMs: number;
@@ -101,6 +116,8 @@ export interface Config {
   transcribeBackoffMaxMs: number;
   companionMaxChunkBytes: number;
   companionSilenceMs: number;
+  /** Silence after speech at which an open utterance is transcribed ahead of its end; 0 turns it off. */
+  companionEarlyMs: number;
   companionMinSpeechMs: number;
   companionMaxSegmentS: number;
   companionVadThreshold: number;
@@ -123,6 +140,18 @@ function positiveInt(env: Env, name: string, fallback: number): number {
   const n = Number(raw);
   if (!Number.isInteger(n) || n <= 0) {
     throw new Error(`${name} must be a positive integer, got ${JSON.stringify(raw)}`);
+  }
+  return n;
+}
+
+function nonNegativeInt(env: Env, name: string, fallback: number): number {
+  const raw = optional(env, name);
+  if (raw === undefined) {
+    return fallback;
+  }
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 0) {
+    throw new Error(`${name} must be a non-negative integer, got ${JSON.stringify(raw)}`);
   }
   return n;
 }
@@ -180,6 +209,17 @@ export function loadConfig(env: Env = process.env): Config {
     ttsTokenFile: optional(env, "QUORUM_TTS_TOKEN_FILE"),
     ttsVoice: optional(env, "QUORUM_TTS_VOICE") ?? DEFAULTS.ttsVoice,
     ttsTimeoutMs: positiveInt(env, "QUORUM_TTS_TIMEOUT_MS", DEFAULTS.ttsTimeoutMs),
+    ttsCacheMaxBytes: positiveInt(env, "QUORUM_TTS_CACHE_MAX_BYTES", DEFAULTS.ttsCacheMaxBytes),
+    leaveDrainTimeoutMs: nonNegativeInt(
+      env,
+      "QUORUM_LEAVE_DRAIN_TIMEOUT_MS",
+      DEFAULTS.leaveDrainTimeoutMs,
+    ),
+    sayPrewarmMaxLines: positiveInt(
+      env,
+      "QUORUM_SAY_PREWARM_MAX_LINES",
+      DEFAULTS.sayPrewarmMaxLines,
+    ),
     chatMaxChars: positiveInt(env, "QUORUM_CHAT_MAX_CHARS", DEFAULTS.chatMaxChars),
     chatConfirmTimeoutMs: positiveInt(
       env,
@@ -193,6 +233,7 @@ export function loadConfig(env: Env = process.env): Config {
       DEFAULTS.sayConfirmTimeoutMs,
     ),
     sayMaxChars: positiveInt(env, "QUORUM_SAY_MAX_CHARS", DEFAULTS.sayMaxChars),
+    sayPollMs: positiveInt(env, "QUORUM_SAY_POLL_MS", DEFAULTS.sayPollMs),
     transcriptBuffer: positiveInt(env, "QUORUM_TRANSCRIPT_BUFFER", DEFAULTS.transcriptBuffer),
     lobbyTimeoutS: positiveInt(env, "QUORUM_LOBBY_TIMEOUT_S", DEFAULTS.lobbyTimeoutS),
     vexaTimeoutMs: positiveInt(env, "QUORUM_VEXA_TIMEOUT_MS", DEFAULTS.vexaTimeoutMs),
@@ -258,6 +299,7 @@ export function loadConfig(env: Env = process.env): Config {
       "QUORUM_COMPANION_SILENCE_MS",
       DEFAULTS.companionSilenceMs,
     ),
+    companionEarlyMs: nonNegativeInt(env, "QUORUM_COMPANION_EARLY_MS", DEFAULTS.companionEarlyMs),
     companionMinSpeechMs: positiveInt(
       env,
       "QUORUM_COMPANION_MIN_SPEECH_MS",

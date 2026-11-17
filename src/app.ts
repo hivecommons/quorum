@@ -72,6 +72,8 @@ export async function startQuorum(
       chatConfirmTimeoutMs: config.chatConfirmTimeoutMs,
       chatConfirmPollMs: config.chatConfirmPollMs,
       sayConfirmTimeoutMs: config.sayConfirmTimeoutMs,
+      sayPollMs: config.sayPollMs,
+      leaveDrainTimeoutMs: config.leaveDrainTimeoutMs,
     });
     adapters.google_meet = vexa;
     adapters.teams = vexa;

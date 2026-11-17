@@ -20,6 +20,7 @@ import {
   type FakeRuntime,
 } from "./helpers/fakeDiscord.js";
 import { pcmFrames, upsampleToStereo48k } from "../src/discord/audio.js";
+import { fadeEdges } from "../src/discord/speech.js";
 import {
   openSse,
   startHarness,
@@ -214,6 +215,8 @@ describe("Discord voice", () => {
     let s = conn?.streams.get("500001");
     for (let i = 0; i < 25; i++) s?.emit("data", pcm48(20));
     s?.emit("end");
+    // A segment's key is its start in whole milliseconds: let the clock move on, as speech does.
+    await new Promise((r) => setTimeout(r, 5));
     conn?.speaking.emit("start", "500001");
     s = conn?.streams.get("500001");
     for (let i = 0; i < 25; i++) s?.emit("data", pcm48(20));
@@ -472,6 +475,25 @@ function ttsEnv(): Record<string, string> {
   };
 }
 
+const S1 = "This is the first sentence of the line.";
+const S2 = "And this is the second sentence of it.";
+const S3 = "Here is a third one to end the line.";
+const CLIP_SAMPLES = 600;
+/** 600 samples at 24 kHz mono. */
+const CLIP_MS = 25;
+
+/** A TTS answer whose every sample is `value`, long enough that its middle is not faded. */
+function clip(value: number): Buffer {
+  return pcm24(Array.from({ length: CLIP_SAMPLES }, () => value));
+}
+
+/** The sample value in the middle of the i-th clip handed to the player. */
+async function playedValue(i: number): Promise<number> {
+  const pcm = Buffer.concat(await packets(player().played[i] as never));
+  // Sample n of the 24 kHz clip is frame 2n of the 48 kHz stereo playback, 4 bytes a frame.
+  return pcm.readInt16LE((CLIP_SAMPLES / 2) * 2 * 4);
+}
+
 function player(i = 0): FakePlayer {
   const p = rt.players[i];
   if (!p) throw new Error("no player");
@@ -492,6 +514,9 @@ describe("Discord speech", () => {
       ok: true,
       queued: true,
       duration_ms: 25,
+      first_audio_ms: expect.any(Number),
+      synth_ms: expect.any(Number),
+      cached: false,
     });
     expect(tts.requests[0]).toMatchObject({
       url: "/v1/audio/speech",
@@ -500,7 +525,8 @@ describe("Discord speech", () => {
     });
     await until(() => player().played.length === 1);
     const got = await packets(player().played[0] as never);
-    const want = pcmFrames(upsampleToStereo48k(pcm));
+    // Each clip is faded in and out before it is played.
+    const want = pcmFrames(upsampleToStereo48k(fadeEdges(Buffer.from(pcm))));
     expect(got.length).toBe(want.length);
     expect(Buffer.concat(got).equals(Buffer.concat(want))).toBe(true);
     expect(rt.encodersFreed).toBe(1);
@@ -510,10 +536,10 @@ describe("Discord speech", () => {
   it("plays clips in say order even when a later one synthesizes first, and skips failures", async () => {
     await boot(ttsEnv());
     const id = await joinDiscord({ voice_id: "bf_emma" });
-    tts.byInput.set("first", { status: 200, body: pcm24([1, 1]), delayMs: 150 });
-    tts.byInput.set("second", { status: 200, body: pcm24([2, 2]) });
+    tts.byInput.set("first", { status: 200, body: clip(1), delayMs: 150 });
+    tts.byInput.set("second", { status: 200, body: clip(2) });
     tts.byInput.set("broken", { status: 503, body: "kokoro is down" });
-    tts.byInput.set("third", { status: 200, body: pcm24([3, 3]) });
+    tts.byInput.set("third", { status: 200, body: clip(3) });
     const first = H().call("say", { meeting_id: id, text: "first" });
     await until(() => tts.requests.length === 1);
     const second = H().call("say", { meeting_id: id, text: "second" });
@@ -532,21 +558,259 @@ describe("Discord speech", () => {
       "bf_emma",
     ]);
 
-    const firstSample = async (i: number): Promise<number> =>
-      Buffer.concat(await packets(player().played[i] as never)).readInt16LE(0);
     await until(() => player().played.length === 1);
-    expect(await firstSample(0)).toBe(1);
+    expect(await playedValue(0)).toBe(1);
     player().finish();
     await until(() => player().played.length === 2);
-    expect(await firstSample(1)).toBe(2);
+    expect(await playedValue(1)).toBe(2);
     player().finish();
     await until(() => player().played.length === 3);
-    expect(await firstSample(2)).toBe(3);
+    expect(await playedValue(2)).toBe(3);
     player().finish();
   });
 
+  it("speaks a line sentence by sentence: the first plays while the second is still synthesized", async () => {
+    await boot(ttsEnv());
+    const id = await joinDiscord();
+    tts.byInput.set(S1, { status: 200, body: clip(1), delayMs: 60 });
+    tts.byInput.set(S2, { status: 200, body: clip(2), delayMs: 250 });
+    const saying = H().call("say", { meeting_id: id, text: `${S1}  ${S2}` });
+    await until(() => tts.requests.length === 1);
+    await new Promise((r) => setTimeout(r, 30));
+    // One request at a time: the second sentence is not asked for while the first is synthesized.
+    expect(tts.requests.map((r) => r.body.input)).toEqual([S1]);
+    const said = await saying;
+    // The answer came once the first sentence was ready, so the line's length is not known yet.
+    expect(said).toEqual({
+      ok: true,
+      queued: true,
+      first_audio_ms: expect.any(Number),
+      synth_ms: said.first_audio_ms,
+      cached: false,
+    });
+    await until(() => player().played.length === 1);
+    expect(await playedValue(0)).toBe(1);
+    expect(tts.requests.map((r) => r.body.input)).toEqual([S1, S2]);
+    // The second sentence is still on its way while the first plays.
+    expect(tts.byInput.get(S2)?.delayMs).toBeGreaterThan(said.first_audio_ms as number);
+    player().finish();
+    await until(() => player().played.length === 2);
+    expect(await playedValue(1)).toBe(2);
+    player().finish();
+
+    // Said again: both sentences come from the cache, at once and with the line's real length.
+    expect(await H().call("say", { meeting_id: id, text: `${S1} ${S2}` })).toEqual({
+      ok: true,
+      queued: true,
+      duration_ms: CLIP_MS * 2,
+      first_audio_ms: expect.any(Number),
+      synth_ms: 0,
+      cached: true,
+    });
+    expect(tts.requests).toHaveLength(2);
+    await until(() => player().played.length === 3);
+    expect(await playedValue(2)).toBe(1);
+    player().finish();
+    await until(() => player().played.length === 4);
+    expect(await playedValue(3)).toBe(2);
+    player().finish();
+  });
+
+  it("answers upstream_error and plays nothing of a line whose first sentence fails", async () => {
+    await boot(ttsEnv());
+    const id = await joinDiscord();
+    tts.byInput.set(S1, { status: 503, body: "kokoro is down" });
+    tts.byInput.set(S2, { status: 200, body: clip(2) });
+    tts.byInput.set(S3, { status: 200, body: clip(3) });
+    expect(await H().call("say", { meeting_id: id, text: `${S1} ${S2} ${S3}` })).toMatchObject({
+      ok: false,
+      error: { code: "upstream_error", message: expect.stringContaining("503") },
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    // The rest of the line was dropped without being synthesized.
+    expect(tts.requests.map((r) => r.body.input)).toEqual([S1]);
+    expect(player().played).toHaveLength(0);
+    // The next line is not held up by it.
+    expect(await H().call("say", { meeting_id: id, text: S3 })).toMatchObject({ ok: true });
+    await until(() => player().played.length === 1);
+    expect(await playedValue(0)).toBe(3);
+    player().finish();
+  });
+
+  it("skips a later sentence that fails and plays the ones after it", async () => {
+    await boot(ttsEnv());
+    const id = await joinDiscord();
+    tts.byInput.set(S1, { status: 200, body: clip(1) });
+    tts.byInput.set(S2, { status: 503, body: "kokoro is down" });
+    tts.byInput.set(S3, { status: 200, body: clip(3) });
+    const said = await H().call("say", { meeting_id: id, text: `${S1} ${S2} ${S3}` });
+    expect(said).toMatchObject({ ok: true, queued: true, cached: false });
+    await until(() => tts.requests.length === 3);
+    expect(tts.requests.map((r) => r.body.input)).toEqual([S1, S2, S3]);
+    await until(() => player().played.length === 1);
+    expect(await playedValue(0)).toBe(1);
+    player().finish();
+    await until(() => player().played.length === 2);
+    expect(await playedValue(1)).toBe(3);
+    player().finish();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(player().played).toHaveLength(2);
+  });
+
+  it("prewarms fixed lines so a later say needs no synthesis, and validates say.prewarm", async () => {
+    await boot({ ...ttsEnv(), QUORUM_SAY_MAX_CHARS: "100", QUORUM_SAY_PREWARM_MAX_LINES: "2" });
+    const id = await joinDiscord({ voice_id: "bf_emma" });
+    for (const texts of [
+      undefined,
+      "Hello.",
+      [],
+      ["Hello.", 7],
+      ["Hello.", "   "],
+      ["x".repeat(101)],
+      ["one.", "two.", "three."],
+    ]) {
+      expect(await H().call("say.prewarm", { meeting_id: id, texts })).toMatchObject({
+        ok: false,
+        error: {
+          code: "invalid_argument",
+          message: expect.stringContaining("texts must be 1 to 2"),
+        },
+      });
+    }
+    expect(await H().call("say.prewarm", { meeting_id: "m_missing", texts: [S1] })).toMatchObject({
+      error: { code: "not_found" },
+    });
+    expect(tts.requests).toHaveLength(0);
+
+    tts.byInput.set(S1, { status: 200, body: clip(1) });
+    tts.byInput.set(S2, { status: 200, body: clip(2) });
+    expect(
+      await H().call("say.prewarm", { meeting_id: id, texts: [`  ${S1} ${S2} `, "Leaving now."] }),
+    ).toEqual({ ok: true, queued: 3 });
+    await until(() => tts.requests.length === 3);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(tts.requests.map((r) => [r.body.input, r.body.voice])).toEqual([
+      [S1, "bf_emma"],
+      [S2, "bf_emma"],
+      ["Leaving now.", "bf_emma"],
+    ]);
+    // Nothing plays until the line is said.
+    expect(player().played).toHaveLength(0);
+    expect(await H().call("say.prewarm", { meeting_id: id, texts: [S1, "Leaving now."] })).toEqual({
+      ok: true,
+      queued: 0,
+    });
+    expect(await H().call("say", { meeting_id: id, text: `${S1} ${S2}` })).toEqual({
+      ok: true,
+      queued: true,
+      duration_ms: CLIP_MS * 2,
+      first_audio_ms: expect.any(Number),
+      synth_ms: 0,
+      cached: true,
+    });
+    expect(tts.requests).toHaveLength(3);
+    await until(() => player().played.length === 1);
+    expect(await playedValue(0)).toBe(1);
+
+    expect(await H().call("meeting.delete", { meeting_id: id })).toMatchObject({ ok: true });
+    const id2 = await joinDiscord();
+    expect(await H().call("meeting.leave", { meeting_id: id2 })).toMatchObject({ ok: true });
+    expect(await H().call("say.prewarm", { meeting_id: id2, texts: [S3] })).toMatchObject({
+      error: { code: "not_live" },
+    });
+  });
+
+  it("waits on meeting.leave for the speech that is playing, then leaves", async () => {
+    await boot(ttsEnv());
+    const id = await joinDiscord();
+    expect(await H().call("say", { meeting_id: id, text: "Leaving now." })).toMatchObject({
+      ok: true,
+    });
+    await until(() => player().played.length === 1);
+    let left = false;
+    const leaving = H()
+      .call("meeting.leave", { meeting_id: id })
+      .then((r) => {
+        left = true;
+        return r;
+      });
+    await new Promise((r) => setTimeout(r, 60));
+    expect(left).toBe(false);
+    expect(H().q.quorum.registry.get(id)?.state).toBe("live");
+    expect(rt.connections[0]?.destroyed).toBe(false);
+    expect(player().stops).toBe(0);
+    player().finish();
+    expect(await leaving).toEqual({ ok: true, state: "ended" });
+    expect(H().q.quorum.registry.get(id)?.reason).toBe("left");
+    expect(rt.connections[0]?.destroyed).toBe(true);
+  });
+
+  it("bounds that wait by QUORUM_LEAVE_DRAIN_TIMEOUT_MS, and does not wait at all with 0", async () => {
+    const drainMs = 120;
+    await boot({ ...ttsEnv(), QUORUM_LEAVE_DRAIN_TIMEOUT_MS: String(drainMs) });
+    const id = await joinDiscord();
+    await H().call("say", { meeting_id: id, text: "This clip never finishes." });
+    await until(() => player().played.length === 1);
+    const started = Date.now();
+    expect(await H().call("meeting.leave", { meeting_id: id })).toEqual({
+      ok: true,
+      state: "ended",
+    });
+    // Timers may fire a millisecond early.
+    expect(Date.now() - started).toBeGreaterThanOrEqual(drainMs - 5);
+    expect(player().stops).toBe(1);
+    expect(rt.connections[0]?.destroyed).toBe(true);
+    await H().close();
+
+    await boot({ ...ttsEnv(), QUORUM_LEAVE_DRAIN_TIMEOUT_MS: "0" });
+    const id2 = await joinDiscord();
+    await H().call("say", { meeting_id: id2, text: "This clip never finishes." });
+    await until(() => player().played.length === 1);
+    expect(await H().call("meeting.leave", { meeting_id: id2 })).toEqual({
+      ok: true,
+      state: "ended",
+    });
+    expect(player().stops).toBe(1);
+  });
+
+  it("still stops at once on /hive leave and on delete, even while a meeting.leave is waiting", async () => {
+    await boot(ttsEnv());
+    const id = await joinDiscord();
+    const sse = await openSse(`${H().q.url}/events?meeting_id=${id}`);
+    await H().call("say", { meeting_id: id, text: "This clip never finishes." });
+    await until(() => player().played.length === 1);
+    const leaving = H().call("meeting.leave", { meeting_id: id });
+    await new Promise((r) => setTimeout(r, 30));
+    const cmd = interaction({ sub: "leave" });
+    rt.client.emit("interactionCreate", cmd);
+    await until(() => cmd.replies.length === 1);
+    expect(H().q.quorum.registry.get(id)?.reason).toBe("leave_command");
+    expect(rt.connections[0]?.destroyed).toBe(true);
+    expect(player().stops).toBe(1);
+    // The waiting leave returns with the meeting as the command left it: one ended event.
+    expect(await leaving).toEqual({ ok: true, state: "ended" });
+    expect(H().q.quorum.registry.get(id)?.reason).toBe("leave_command");
+    await new Promise((r) => setTimeout(r, 30));
+    expect(sse.events.filter((e) => e.type === "state" && e.state === "ended")).toMatchObject([
+      { reason: "leave_command" },
+    ]);
+    sse.close();
+
+    const id2 = await joinDiscord();
+    await H().call("say", { meeting_id: id2, text: "This clip never finishes." });
+    await until(() => player(1).played.length === 1);
+    expect(await H().call("meeting.delete", { meeting_id: id2 })).toMatchObject({ ok: true });
+    expect(player(1).stops).toBe(1);
+    expect(rt.connections[1]?.destroyed).toBe(true);
+  });
+
   it("stops speech on leave, survives a playback error, and enforces the text cap", async () => {
-    await boot({ ...ttsEnv(), QUORUM_SAY_MAX_CHARS: "10" });
+    await boot({
+      ...ttsEnv(),
+      QUORUM_SAY_MAX_CHARS: "10",
+      // The clip below never finishes, so the leave stops it after this wait.
+      QUORUM_LEAVE_DRAIN_TIMEOUT_MS: "50",
+    });
     const id = await joinDiscord();
     expect(await H().call("say", { meeting_id: id, text: "x".repeat(11) })).toMatchObject({
       error: { code: "invalid_argument" },
@@ -573,6 +837,10 @@ describe("Discord speech", () => {
     expect(rt.players).toHaveLength(0);
     expect(await H().call("say", { meeting_id: id, text: "x" })).toMatchObject({
       error: { code: "platform_unavailable", message: expect.stringContaining("QUORUM_TTS_URL") },
+    });
+    expect(await H().call("say.prewarm", { meeting_id: id, texts: ["Hello."] })).toEqual({
+      ok: true,
+      queued: 0,
     });
   });
 });

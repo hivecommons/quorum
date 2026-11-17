@@ -322,6 +322,29 @@ describe("Transcriber prompt and retries", () => {
     expect(sleeps).toHaveLength(2);
   });
 
+  it("lets one call set its own attempt budget", async () => {
+    const busy = (): Response => new Response("busy", { status: 503 });
+    const once = scripted([busy()]);
+    await expect(once.t().transcribe(Buffer.alloc(0), { maxAttempts: 1 })).rejects.toMatchObject({
+      code: "upstream_error",
+    });
+    expect(once.calls).toHaveLength(1);
+    expect(once.sleeps).toEqual([]);
+    // A budget below one is one try; a fractional one is rounded down.
+    const zero = scripted([busy()]);
+    await expect(zero.t().transcribe(Buffer.alloc(0), { maxAttempts: 0 })).rejects.toBeDefined();
+    expect(zero.calls).toHaveLength(1);
+    const twoAndABit = scripted([busy(), busy(), busy()]);
+    await expect(
+      twoAndABit.t().transcribe(Buffer.alloc(0), { maxAttempts: 2.9 }),
+    ).rejects.toMatchObject({ message: expect.stringContaining("2 attempts") });
+    expect(twoAndABit.calls).toHaveLength(2);
+    // Without it the client's policy stands.
+    const policy = scripted([busy(), busy()]);
+    expect(await policy.t().transcribe(Buffer.alloc(0), { hints: ["Betty"] })).toBe("ok");
+    expect(policy.calls).toHaveLength(3);
+  });
+
   it("does not retry a request the service refused", async () => {
     const { t, calls } = scripted([new Response("bad", { status: 400 })]);
     await expect(t().transcribe(Buffer.alloc(0))).rejects.toMatchObject({

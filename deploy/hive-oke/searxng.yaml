@@ -2,7 +2,9 @@
 # (github.com/searxng/searxng, AGPL-3.0), the upstream image 2026.11.15-2d500cb6b (manifest list with
 # linux/amd64, linux/arm64, linux/arm/v7). Hive calls
 #   http://searxng.meetings.svc.cluster.local:8080/search?format=json&q=...
-# ClusterIP only. It is not a public instance, so the bot limiter (which needs valkey) is off.
+# ClusterIP only. It is not a public instance, so the inbound bot limiter (which needs valkey
+# and only guards the instance against outside clients) is off. Outbound politeness is set
+# under `search` (engine back-off) and `outgoing` (timeouts, connection pool).
 # The secret_key comes from Secret `searxng-secret` (SEARXNG_SECRET), created by install.sh.
 apiVersion: v1
 kind: ConfigMap
@@ -15,16 +17,50 @@ metadata:
 data:
   settings.yml: |
     # Upstream defaults (searx/settings.yml of the pinned tag) with only these engines kept.
-    # A plain query searches category `general` (duckduckgo, brave, wikipedia); github and
-    # stackoverflow are in `it` (add &categories=general,it, or use !gh / !st in q).
+    # All of them answer from a documented, keyless API (or an open index) and work from a
+    # datacentre address without a bot wall:
+    #   general: wikipedia, wikidata (entity summaries), mwmbl (open, non-profit web index)
+    #   it:      github, stackoverflow (Stack Exchange API), mdn, hackernews (Algolia API)
+    # Hive searches categories general,it.
+    # Left out on purpose:
+    #   - duckduckgo and brave (the HTML engines): both block this address ("CAPTCHA",
+    #     "Suspended: too many requests"). We never work around a bot wall.
+    #   - mojeek: upstream marks it inactive, it answers with a proof-of-work CAPTCHA.
+    #   - marginalia and braveapi: fine for automated use, but each needs an API key. To add
+    #     one, put the key in a Secret, list the engine under keep_only and set its api_key.
+    #   - qwant: its terms do not clearly allow automated queries, so it stays off.
     use_default_settings:
       engines:
         keep_only:
-          - duckduckgo
-          - brave
           - wikipedia
+          - wikidata
+          - mwmbl
           - github
           - stackoverflow
+          - mdn
+          - hackernews
+    # Per-engine overrides (merged into the kept defaults by name). Every timeout is under
+    # hive's own 1.2 s web budget, so one slow engine cannot cost the whole answer.
+    engines:
+      - name: wikipedia
+        # "list" puts the article in `results` as well as `infoboxes`.
+        display_type: ["list", "infobox"]
+        timeout: 1.0
+      - name: wikidata
+        # Upstream allows 3.0 s; an infobox that late is no use to a spoken answer.
+        timeout: 1.0
+      - name: mwmbl
+        disabled: false
+        timeout: 1.0
+      - name: github
+        timeout: 1.0
+      - name: stackoverflow
+        timeout: 1.0
+      - name: mdn
+        timeout: 1.0
+      - name: hackernews
+        disabled: false
+        timeout: 1.0
     general:
       instance_name: "hive search"
       enable_metrics: false
@@ -34,6 +70,15 @@ data:
     search:
       safe_search: 0
       autocomplete: ""
+      # Back off from an engine that refuses us instead of retrying into its rate limit:
+      # after an error an engine rests 30 s, doubling up to 10 minutes; after "too many
+      # requests" or "access denied" it rests an hour, after a CAPTCHA a day.
+      ban_time_on_fail: 30
+      max_ban_time_on_fail: 600
+      suspended_times:
+        SearxEngineAccessDenied: 3600
+        SearxEngineCaptcha: 86400
+        SearxEngineTooManyRequests: 3600
       formats:
         - html
         - json
@@ -47,6 +92,14 @@ data:
       public_instance: false
       image_proxy: false
       method: "GET"
+    outgoing:
+      # Default and ceiling for one engine request, in seconds (hive waits 1.2 s in all).
+      request_timeout: 1.0
+      max_request_timeout: 1.0
+      # One hive asks a few questions a minute: a small pool is plenty and keeps the
+      # number of connections any one engine sees low.
+      pool_connections: 20
+      enable_http2: true
     valkey:
       url: false
 ---

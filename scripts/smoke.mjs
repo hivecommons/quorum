@@ -8,6 +8,8 @@ import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
+/** The tools docs/contract.md lists: join, leave, status, transcript.read, chat.post, say, say.prewarm, delete. */
+const EXPECTED_TOOLS = 8;
 const bundle = resolve(process.argv[2] ?? "dist/quorum.mjs");
 const withDavey = process.argv.includes("--with-davey");
 const dir = mkdtempSync(join(tmpdir(), "quorum-smoke-"));
@@ -104,7 +106,7 @@ try {
     body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
   }).then((r) => r.json());
   const names = list?.result?.tools?.map((t) => t.name) ?? [];
-  if (names.length !== 7) fail(`tools/list: ${JSON.stringify(names)}`);
+  if (names.length !== EXPECTED_TOOLS) fail(`tools/list: ${JSON.stringify(names)}`);
   console.log(`smoke: MCP ok, tools ${names.join(", ")}`);
   const expected = withDavey ? "discord login failed" : "discord disabled";
   await waitFor(() => logs.includes(expected), 30_000, `log line "${expected}"`);

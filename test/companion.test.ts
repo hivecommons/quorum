@@ -7,8 +7,9 @@ import {
 } from "../src/companion/adapter.js";
 import { FRAME_SAMPLES, rms, Segmenter } from "../src/companion/segmenter.js";
 import { loadConfig } from "../src/config.js";
-import { silentLogger } from "../src/log.js";
-import { Meeting } from "../src/meeting.js";
+import type { Transcriber, TranscribeOptions } from "../src/discord/transcribe.js";
+import { silentLogger, type Logger } from "../src/log.js";
+import { Meeting, type QuorumEvent } from "../src/meeting.js";
 import { FakeStt } from "./helpers/fakeDiscord.js";
 import {
   openSse,
@@ -85,6 +86,35 @@ describe("Segmenter", () => {
     expect(seg.push(concat(tone(40), silence(120)))).toEqual([]);
   });
 
+  it("shows the open utterance without closing it, and where its speech ended", () => {
+    const seg = new Segmenter(opts);
+    expect(seg.peek()).toBeUndefined();
+    expect(seg.receivedMs).toBe(0);
+    seg.push(silence(200));
+    expect(seg.peek()).toBeUndefined();
+    expect(seg.push(concat(tone(300), silence(40)))).toEqual([]);
+    const open = seg.peek();
+    expect(open).toMatchObject({
+      startMs: 200,
+      endMs: 540,
+      speechEndMs: 500,
+      speechMs: 300,
+      trailingSilenceMs: 40,
+    });
+    expect(open?.samples).toHaveLength(samplesFor(340));
+    expect(seg.receivedMs).toBe(540);
+    // Peeking closed nothing: the same utterance is still open and ends as usual.
+    expect(seg.peek()?.startMs).toBe(200);
+    const done = seg.push(silence(60));
+    expect(done).toHaveLength(1);
+    expect(done[0]).toMatchObject({ startMs: 200, endMs: 600, speechEndMs: 500 });
+    expect(seg.peek()).toBeUndefined();
+    // More speech moves the speech end; a flush reports it too.
+    seg.push(concat(tone(100), silence(40), tone(100)));
+    expect(seg.peek()).toMatchObject({ startMs: 600, speechEndMs: 840, trailingSilenceMs: 0 });
+    expect(seg.flush()).toMatchObject({ startMs: 600, endMs: 840, speechEndMs: 840 });
+  });
+
   it("measures rms", () => {
     expect(rms(new Int16Array(0))).toBe(0);
     expect(rms(tone(20))).toBe(LOUD);
@@ -108,6 +138,253 @@ describe("companion adapter without the platform plumbing", () => {
     });
     await expect(a.refresh()).resolves.toBeUndefined();
     await a.close();
+  });
+});
+
+describe("companion early transcription", () => {
+  const SILENCE_MS = 500;
+  const EARLY_MS = 150;
+  const WAV_HEADER_BYTES = 44;
+  const T0 = 10_000;
+
+  interface SttCall {
+    wav: Buffer;
+    opts: TranscribeOptions | undefined;
+    resolve(text: string): void;
+    reject(err: Error): void;
+  }
+
+  function rig(env: Record<string, string> = {}) {
+    const calls: SttCall[] = [];
+    const transcriber = {
+      transcribe: (wav: Buffer, opts?: TranscribeOptions) =>
+        new Promise<string>((resolve, reject) => {
+          calls.push({ wav, opts, resolve, reject });
+        }),
+    } as unknown as Transcriber;
+    const timings: Record<string, unknown>[] = [];
+    const warnings: string[] = [];
+    const log: Logger = {
+      ...silentLogger,
+      info: (msg, fields) => {
+        if (msg === "companion: segment timing") timings.push(fields ?? {});
+      },
+      warn: (msg) => {
+        warnings.push(msg);
+      },
+    };
+    const clock = { ms: T0 };
+    const adapter = new CompanionAdapter({
+      config: loadConfig({
+        QUORUM_COMPANION_SILENCE_MS: String(SILENCE_MS),
+        QUORUM_COMPANION_EARLY_MS: String(EARLY_MS),
+        ...env,
+      }),
+      log,
+      transcriber,
+      now: () => clock.ms,
+    });
+    const meeting = new Meeting({
+      platform: "companion",
+      bufferSize: 10,
+      displayName: "Betty Bee",
+    });
+    const segments: Extract<QuorumEvent, { type: "segment" }>[] = [];
+    meeting.onEvent((e) => {
+      if (e.type === "segment") segments.push(e);
+    });
+    let seq = 0;
+    const send = (pcm: Int16Array): void => {
+      adapter.audio(meeting, "call", seq++, bytes(pcm));
+    };
+    return { adapter, meeting, calls, timings, warnings, clock, segments, send };
+  }
+
+  /** Lets settled promises run their reactions. */
+  const tick = (): Promise<void> => new Promise((r) => setImmediate(r));
+
+  function call(calls: SttCall[], i: number): SttCall {
+    const c = calls[i];
+    if (!c) throw new Error(`no transcription request ${i}`);
+    return c;
+  }
+
+  function wavMs(wav: Buffer): number {
+    return ((wav.length - WAV_HEADER_BYTES) / 2 / SAMPLE_RATE) * MS_PER_S;
+  }
+
+  it("asks once, publishes a draft, and reuses the answer as the final when the silence completes", async () => {
+    const r = rig();
+    await r.adapter.join(r.meeting, { displayName: "Betty Bee", voice: false });
+    r.send(concat(tone(400), silence(200)));
+    expect(r.calls).toHaveLength(1);
+    // One try, and the clip is padded with silence to the length the ended utterance will have.
+    expect(call(r.calls, 0).opts).toEqual({ hints: ["Betty", "Betty Bee"], maxAttempts: 1 });
+    expect(wavMs(call(r.calls, 0).wav)).toBe(400 + SILENCE_MS);
+    // More silence short of the end asks nothing new.
+    r.clock.ms = T0 + 120;
+    call(r.calls, 0).resolve("hello there");
+    await tick();
+    expect(r.segments).toMatchObject([{ text: "hello there", final: false, start: 0 }]);
+    expect(r.timings).toEqual([]);
+
+    r.clock.ms = T0 + 500;
+    r.send(silence(400));
+    await tick();
+    expect(r.calls).toHaveLength(1);
+    expect(r.segments).toMatchObject([
+      { text: "hello there", final: false, start: 0, speaker: CALL_SPEAKER },
+      { text: "hello there", final: true, start: 0, end: 0.9, speaker: CALL_SPEAKER },
+    ]);
+    // Audio time zero is T0 - 600 ms; the last speech sample is at 400 ms, so it was spoken at
+    // T0 - 200, arrived at T0, the end was known at T0 + 500 and the answer took 120 ms.
+    expect(r.timings).toEqual([
+      {
+        seq: 2,
+        channel: "call",
+        clip_ms: 900,
+        capture_ms: 200,
+        endpoint_ms: 500,
+        stt_ms: 120,
+        total_ms: 700,
+        early: true,
+      },
+    ]);
+    expect(r.meeting.readSegments().segments.map((s) => s.text)).toEqual(["hello there"]);
+  });
+
+  it("drops the early answer when the speaker carries on and transcribes the whole utterance", async () => {
+    const r = rig();
+    await r.adapter.join(r.meeting, { displayName: "Betty Bee", voice: false });
+    r.send(concat(tone(400), silence(200)));
+    call(r.calls, 0).resolve("hello");
+    await tick();
+    expect(r.segments).toMatchObject([{ text: "hello", final: false }]);
+    r.clock.ms = T0 + 1000;
+    r.send(concat(tone(400), silence(600)));
+    await tick();
+    expect(r.calls).toHaveLength(2);
+    // The whole utterance, with the service's usual retries.
+    expect(call(r.calls, 1).opts).toEqual({ hints: ["Betty", "Betty Bee"] });
+    expect(wavMs(call(r.calls, 1).wav)).toBe(1000 + SILENCE_MS);
+    r.clock.ms = T0 + 1300;
+    call(r.calls, 1).resolve("hello again friend");
+    await tick();
+    expect(r.segments).toMatchObject([
+      { text: "hello", final: false, start: 0 },
+      { text: "hello again friend", final: true, start: 0, end: 1.5 },
+    ]);
+    expect(r.timings).toMatchObject([{ clip_ms: 1500, stt_ms: 300, early: false }]);
+  });
+
+  it("publishes no draft for an early answer that arrives after more speech", async () => {
+    const r = rig();
+    await r.adapter.join(r.meeting, { displayName: "Betty Bee", voice: false });
+    r.send(concat(tone(400), silence(200)));
+    r.send(concat(tone(200), silence(100)));
+    // The pause after the new speech is still short of QUORUM_COMPANION_EARLY_MS.
+    expect(r.calls).toHaveLength(1);
+    call(r.calls, 0).resolve("stale words");
+    await tick();
+    expect(r.segments).toEqual([]);
+    r.send(silence(100));
+    expect(r.calls).toHaveLength(2);
+    r.send(silence(100));
+    // Still the same speech end: not asked a third time.
+    expect(r.calls).toHaveLength(2);
+    call(r.calls, 1).resolve("the whole thought");
+    await tick();
+    r.send(silence(200));
+    await tick();
+    expect(r.calls).toHaveLength(2);
+    expect(r.segments.map((s) => [s.text, s.final])).toEqual([
+      ["the whole thought", false],
+      ["the whole thought", true],
+    ]);
+  });
+
+  it("never publishes a draft after its final: an answer that arrives once the utterance ended is the final only", async () => {
+    const r = rig();
+    await r.adapter.join(r.meeting, { displayName: "Betty Bee", voice: false });
+    r.send(concat(tone(400), silence(200)));
+    r.clock.ms = T0 + 500;
+    r.send(silence(400));
+    await tick();
+    expect(r.segments).toEqual([]);
+    r.clock.ms = T0 + 650;
+    call(r.calls, 0).resolve("late but whole");
+    await tick();
+    expect(r.calls).toHaveLength(1);
+    expect(r.segments.map((s) => [s.text, s.final])).toEqual([["late but whole", true]]);
+    expect(r.timings).toMatchObject([{ stt_ms: 650, total_ms: 850, early: true }]);
+  });
+
+  it("falls back to the normal request when the early one fails", async () => {
+    const r = rig();
+    await r.adapter.join(r.meeting, { displayName: "Betty Bee", voice: false });
+    r.send(concat(tone(400), silence(200)));
+    call(r.calls, 0).reject(new Error("busy"));
+    await tick();
+    expect(r.segments).toEqual([]);
+    r.clock.ms = T0 + 500;
+    r.send(silence(400));
+    await tick();
+    expect(r.calls).toHaveLength(2);
+    expect(call(r.calls, 1).opts).toEqual({ hints: ["Betty", "Betty Bee"] });
+    r.clock.ms = T0 + 900;
+    call(r.calls, 1).resolve("second ask");
+    await tick();
+    expect(r.segments.map((s) => [s.text, s.final])).toEqual([["second ask", true]]);
+    expect(r.timings).toMatchObject([{ stt_ms: 400, endpoint_ms: 500, early: false }]);
+    expect(r.warnings).toEqual([]);
+  });
+
+  it("keeps the old behaviour with QUORUM_COMPANION_EARLY_MS=0, and logs no timing for an empty answer", async () => {
+    const r = rig({ QUORUM_COMPANION_EARLY_MS: "0" });
+    await r.adapter.join(r.meeting, { displayName: "Betty Bee", voice: false });
+    r.send(concat(tone(400), silence(200)));
+    expect(r.calls).toHaveLength(0);
+    r.send(silence(400));
+    await tick();
+    expect(r.calls).toHaveLength(1);
+    expect(call(r.calls, 0).opts).toEqual({ hints: ["Betty", "Betty Bee"] });
+    call(r.calls, 0).resolve("plain");
+    await tick();
+    expect(r.segments.map((s) => [s.text, s.final])).toEqual([["plain", true]]);
+    expect(r.timings).toMatchObject([{ early: false }]);
+
+    r.send(concat(tone(400), silence(600)));
+    await tick();
+    call(r.calls, 1).resolve("   ");
+    await tick();
+    expect(r.segments).toHaveLength(1);
+    expect(r.timings).toHaveLength(1);
+  });
+
+  it("waits for speech worth sending, reuses an early answer on leave, and drops a draft for a meeting that left", async () => {
+    const r = rig();
+    await r.adapter.join(r.meeting, { displayName: "Betty Bee", voice: false });
+    // Under QUORUM_COMPANION_MIN_SPEECH_MS of speech: nothing is asked early.
+    r.send(concat(tone(200), silence(200)));
+    expect(r.calls).toHaveLength(0);
+    r.send(silence(400));
+    r.send(concat(tone(400), silence(200)));
+    expect(r.calls).toHaveLength(1);
+    const leaving = r.adapter.leave(r.meeting);
+    call(r.calls, 0).resolve("last words");
+    await leaving;
+    expect(r.calls).toHaveLength(1);
+    expect(r.segments.map((s) => [s.text, s.final])).toEqual([["last words", true]]);
+    expect(r.meeting.state).toBe("ended");
+
+    // A meeting erased while the early request runs publishes nothing.
+    const gone = rig();
+    await gone.adapter.join(gone.meeting, { displayName: "Betty Bee", voice: false });
+    gone.send(concat(tone(400), silence(200)));
+    await gone.adapter.erase(gone.meeting);
+    call(gone.calls, 0).resolve("nobody hears this");
+    await tick();
+    expect(gone.segments).toEqual([]);
   });
 });
 
@@ -279,6 +556,11 @@ describe("companion platform end to end", () => {
       ok: false,
       error: { code: "platform_unavailable" },
     });
+    // The companion has no speech of its own to prepare.
+    expect(await harness().call("say.prewarm", { meeting_id: id, texts: ["Hello."] })).toEqual({
+      ok: true,
+      queued: 0,
+    });
     const sse = await openSse(`${harness().q.url}/events?meeting_id=${id}`);
     stt.replies.push({ status: 200, body: { text: "last words" } });
     await audio(id, "call", 0, bytes(tone(300)));
@@ -292,6 +574,37 @@ describe("companion platform end to end", () => {
     expect(after.status).toBe(409);
     expect((await outbox(id)).status).toBe(409);
     expect(await harness().call("meeting.delete", { meeting_id: id })).toMatchObject({ ok: true });
+    sse.close();
+  });
+
+  it("sends one padded request for an utterance whose pause runs to its end, as a draft then a final", async () => {
+    await harness().close();
+    const silenceMs = 500;
+    h = await startHarness({
+      QUORUM_TRANSCRIBE_URL: stt.url,
+      QUORUM_COMPANION_SILENCE_MS: String(silenceMs),
+    });
+    const id = await join();
+    const sse = await openSse(`${harness().q.url}/events?meeting_id=${id}`);
+    stt.replies.push({ status: 200, body: { text: "introduce yourself" } });
+    await audio(id, "mic", 0, bytes(concat(tone(400), silence(200))));
+    await sse.waitFor((evs) => evs.some((e) => e.type === "segment"));
+    await audio(id, "mic", 1, bytes(silence(400)));
+    await sse.waitFor((evs) => evs.filter((e) => e.type === "segment").length === 2);
+    expect(sse.events.filter((e) => e.type === "segment")).toMatchObject([
+      { text: "introduce yourself", final: false, speaker: { id: "host", name: "Ana" } },
+      { text: "introduce yourself", final: true, speaker: { id: "host", name: "Ana" } },
+    ]);
+    expect(stt.bodies).toHaveLength(1);
+    // The early clip is the 600 ms received so far plus digital silence up to the full pause.
+    const form = stt.bodies[0]?.body ?? Buffer.alloc(0);
+    const riff = form.indexOf(Buffer.from("RIFF"));
+    const wavDataSizeOffset = 40;
+    const dataBytes = form.readUInt32LE(riff + wavDataSizeOffset);
+    expect(dataBytes).toBe(samplesFor(400 + silenceMs) * 2);
+    const wavHeaderBytes = 44;
+    const tail = form.subarray(riff + wavHeaderBytes + dataBytes - samplesFor(300) * 2);
+    expect(tail.subarray(0, samplesFor(300) * 2).every((b) => b === 0)).toBe(true);
     sse.close();
   });
 

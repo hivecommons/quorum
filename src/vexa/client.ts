@@ -89,6 +89,19 @@ export function codeForStatus(status: number): ErrorCode {
   return "upstream_error";
 }
 
+/**
+ * A spoken line's playback record. `first_audio_ms` (the request reaching the bot to the first
+ * audio played), `synth_ms` and `cached` are present only from a bot that reports them.
+ */
+export interface SpeakRecord {
+  status?: string;
+  reason?: string;
+  duration_ms?: number;
+  first_audio_ms?: number;
+  synth_ms?: number;
+  cached?: boolean;
+}
+
 export class VexaClient {
   private readonly fetchImpl: typeof fetch;
 
@@ -200,16 +213,9 @@ export class VexaClient {
    * `queued`, `speaking`, `spoken` (with `duration_ms`, the clip's real length), or `failed` with
    * the bot's reason (for example `mic_muted`).
    */
-  async speakStatus(
-    platform: string,
-    nativeId: string,
-    requestId: string,
-  ): Promise<{ status?: string; reason?: string; duration_ms?: number }> {
+  async speakStatus(platform: string, nativeId: string, requestId: string): Promise<SpeakRecord> {
     const path = botPath(platform, nativeId) + "/speak/" + encodeURIComponent(requestId);
-    return (
-      (await this.request<{ status?: string; reason?: string; duration_ms?: number }>("GET", path))
-        .data ?? {}
-    );
+    return (await this.request<SpeakRecord>("GET", path)).data ?? {};
   }
 
   async deleteMeeting(platform: string, nativeId: string): Promise<void> {

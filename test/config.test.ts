@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULTS, loadConfig, parseListen, readSecretFile } from "../src/config.js";
+import {
+  DEFAULT_TRANSCRIBE_HOTWORDS,
+  DEFAULTS,
+  loadConfig,
+  parseListen,
+  readSecretFile,
+} from "../src/config.js";
 import { QuorumError } from "../src/errors.js";
 import { clearSecrets, redact } from "../src/log.js";
 import { tempDir, writeSecret } from "./helpers/harness.js";
@@ -17,6 +23,59 @@ describe("loadConfig", () => {
     expect(c.discordCommands).toBe("guild");
     expect(c.vexaVoiceDefault).toBe(false);
     expect(c.vexaUrl).toBeUndefined();
+  });
+
+  it("defaults the speech, leave and early transcription settings", () => {
+    expect(loadConfig({})).toMatchObject({
+      ttsCacheMaxBytes: 33_554_432,
+      leaveDrainTimeoutMs: 8000,
+      sayPrewarmMaxLines: 32,
+      sayPollMs: 200,
+      companionEarlyMs: 100,
+    });
+  });
+
+  it("reads the speech, leave and early transcription overrides", () => {
+    expect(
+      loadConfig({
+        QUORUM_TTS_CACHE_MAX_BYTES: "1024",
+        QUORUM_LEAVE_DRAIN_TIMEOUT_MS: "0",
+        QUORUM_SAY_PREWARM_MAX_LINES: "4",
+        QUORUM_SAY_POLL_MS: "50",
+        QUORUM_COMPANION_EARLY_MS: "0",
+      }),
+    ).toMatchObject({
+      ttsCacheMaxBytes: 1024,
+      leaveDrainTimeoutMs: 0,
+      sayPrewarmMaxLines: 4,
+      sayPollMs: 50,
+      companionEarlyMs: 0,
+    });
+    expect(loadConfig({ QUORUM_COMPANION_EARLY_MS: "250" }).companionEarlyMs).toBe(250);
+  });
+
+  it("sends the project's vocabulary as default hotwords, the bot's name and hive first", () => {
+    const words = loadConfig({}).transcribeHotwords;
+    expect(words.join(", ")).toBe(DEFAULT_TRANSCRIBE_HOTWORDS);
+    expect(words.slice(0, 3)).toEqual(["Betty", "hive", "hive queue"]);
+    for (const w of [
+      "Kubernetes",
+      "KubeCon",
+      "CNCF",
+      "Spektacular",
+      "Spek",
+      "Plaud",
+      "RFC",
+      "inbox",
+      "spoke",
+      "hub",
+    ]) {
+      expect(words).toContain(w);
+    }
+    expect(loadConfig({ QUORUM_TRANSCRIBE_HOTWORDS: "alpha, beta" }).transcribeHotwords).toEqual([
+      "alpha",
+      "beta",
+    ]);
   });
 
   it("reads overrides and trims trailing slashes", () => {
@@ -50,6 +109,16 @@ describe("loadConfig", () => {
     [{ QUORUM_DISCORD_COMMANDS: "some" }, /guild, global or off/],
     [{ QUORUM_VEXA_VOICE: "maybe" }, /true or false/],
     [{ QUORUM_LISTEN: "nope" }, /host:port/],
+    [
+      { QUORUM_COMPANION_EARLY_MS: "-1" },
+      /QUORUM_COMPANION_EARLY_MS must be a non-negative integer/,
+    ],
+    [{ QUORUM_COMPANION_EARLY_MS: "1.5" }, /non-negative integer/],
+    [{ QUORUM_COMPANION_EARLY_MS: "soon" }, /non-negative integer/],
+    [{ QUORUM_LEAVE_DRAIN_TIMEOUT_MS: "-5" }, /non-negative integer/],
+    [{ QUORUM_TTS_CACHE_MAX_BYTES: "0" }, /positive integer/],
+    [{ QUORUM_SAY_PREWARM_MAX_LINES: "0" }, /positive integer/],
+    [{ QUORUM_SAY_POLL_MS: "0" }, /positive integer/],
   ])("rejects %j", (env, msg) => {
     expect(() => loadConfig(env)).toThrow(msg);
   });

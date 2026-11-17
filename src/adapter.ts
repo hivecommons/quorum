@@ -20,6 +20,11 @@ export interface PlatformAdapter {
    * the line could not be spoken (for example a muted microphone).
    */
   say(meeting: Meeting, text: string): Promise<SayOutcome>;
+  /**
+   * Gets fixed lines ready to be spoken without a wait (say.prewarm). Returns how many pieces were
+   * queued for synthesis; a platform that cannot prepare speech leaves this out.
+   */
+  prewarm?(meeting: Meeting, lines: string[]): Promise<number>;
   /** Erases the transcript upstream (quorum clears its own buffer afterwards). */
   erase(meeting: Meeting): Promise<void>;
 }
@@ -27,6 +32,12 @@ export interface PlatformAdapter {
 export interface SayOutcome {
   /** The spoken clip's real length, when the platform knows it. */
   durationMs?: number;
+  /** From the say request to the first audio handed to playback, when the platform knows it. */
+  firstAudioMs?: number;
+  /** Time spent synthesizing before the first audio; 0 when it came from the cache. */
+  synthMs?: number;
+  /** Every piece of the line came from the clip cache. */
+  cached?: boolean;
 }
 
 export interface ChatOptions {

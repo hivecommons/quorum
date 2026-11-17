@@ -79,13 +79,26 @@ export const TOOLS = [
     name: "say",
     description:
       "Speak text aloud in the meeting. Lines of one meeting play one after another, never over " +
-      "each other. Returns {queued:true, duration_ms?}: duration_ms is the clip's real length " +
-      "when the platform reports it. A line the platform could not speak (for example a muted " +
-      "microphone) is platform_unavailable naming the reason.",
+      "each other. Returns {queued:true, duration_ms?, first_audio_ms?, synth_ms?, cached?}: " +
+      "duration_ms is the clip's real length when the platform reports it, first_audio_ms the " +
+      "time from the request to the first audio. A line the platform could not speak (for " +
+      "example a muted microphone) is platform_unavailable naming the reason.",
     inputSchema: {
       type: "object",
       properties: { meeting_id: meetingId, text: { type: "string" } },
       required: ["meeting_id", "text"],
+    },
+  },
+  {
+    name: "say.prewarm",
+    description:
+      "Get fixed lines (an introduction, acknowledgements, a goodbye) ready so a later say of " +
+      "the same text starts at once. Returns {queued}: the pieces sent for synthesis in the " +
+      "background; 0 when they are ready already or the platform prepares its own speech.",
+    inputSchema: {
+      type: "object",
+      properties: { meeting_id: meetingId, texts: { type: "array", items: { type: "string" } } },
+      required: ["meeting_id", "texts"],
     },
   },
   {
@@ -115,6 +128,8 @@ export function callTool(q: Quorum, name: string, args: unknown): Promise<ToolRe
       return q.chatPost(args);
     case "say":
       return q.say(args);
+    case "say.prewarm":
+      return q.sayPrewarm(args);
     case "meeting.delete":
       return q.delete(args);
     default:

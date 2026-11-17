@@ -57,6 +57,8 @@ export interface TranscriberOptions {
 export interface TranscribeOptions {
   /** Names to bias recognition toward, most important first (the bot's display name). */
   hints?: string[];
+  /** Total tries for this call, the first included; default the client's retry policy. */
+  maxAttempts?: number;
 }
 
 export function transcriptionsUrl(base: string): string {
@@ -173,7 +175,7 @@ export class Transcriber {
     const vocabulary = this.opts.hotwords ?? [];
     const prompt = buildPrompt([...hints, ...vocabulary]);
     const hotwords = buildHotwords(hints, vocabulary);
-    const { maxAttempts } = this.retry;
+    const maxAttempts = Math.max(1, Math.floor(call.maxAttempts ?? this.retry.maxAttempts));
     for (let attempt = 1; ; attempt++) {
       try {
         return await this.once(wav, prompt, hotwords);
