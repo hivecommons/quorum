@@ -4,20 +4,20 @@ Quorum (RFC #1) uses one shared Vexa control plane per cluster. On hive-oke it r
 `meetings`, and nothing outside that namespace is touched. The only cluster-scoped object is the
 `meetings` Namespace.
 
-| File                 | What it is                                                                                   |
-| -------------------- | -------------------------------------------------------------------------------------------- |
-| `namespace.yaml`     | Namespace `meetings` (Pod Security baseline in warn/audit mode)                              |
-| `values.yaml`        | Helm values for the Vexa chart, plus the `quorum` block read by `install.sh`                 |
-| `versitygw.yaml`     | In-namespace S3 endpoint (versitygw, POSIX backend on a 50Gi `oci-bv` PVC), bucket Job       |
-| `transcription.yaml` | CPU Whisper (faster-whisper, int8): realtime tier (`base`) and batch tier (`small`)          |
-| `tts.yaml`           | CPU text-to-speech (Kokoro via Kokoro-FastAPI) Deployment, Service, voice-map ConfigMap      |
-| `searxng.yaml`       | SearXNG web search for hive Betty: Deployment, Service `searxng:8080`, settings ConfigMap    |
-| `policy.yaml`        | LimitRange and gateway NetworkPolicy                                                         |
+| File                 | What it is                                                                                     |
+| -------------------- | ---------------------------------------------------------------------------------------------- |
+| `namespace.yaml`     | Namespace `meetings` (Pod Security baseline in warn/audit mode)                                |
+| `values.yaml`        | Helm values for the Vexa chart, plus the `quorum` block read by `install.sh`                   |
+| `versitygw.yaml`     | In-namespace S3 endpoint (versitygw, POSIX backend on a 50Gi `oci-bv` PVC), bucket Job         |
+| `transcription.yaml` | CPU Whisper (faster-whisper, int8): realtime tier (`base`) and batch tier (`small`)            |
+| `tts.yaml`           | CPU text-to-speech (Kokoro via Kokoro-FastAPI) Deployment, Service, voice-map ConfigMap        |
+| `searxng.yaml`       | SearXNG web search for hive Betty: Deployment, Service `searxng:8080`, settings ConfigMap      |
+| `policy.yaml`        | LimitRange and gateway NetworkPolicy                                                           |
 | `prepull.yaml`       | Meeting-bot image pre-puller DaemonSet in namespace `meetings-prepull` (outside the bot quota) |
-| `install.sh`         | Idempotent install/upgrade: Secrets, policy, ResourceQuota, storage, STT, TTS, search, Helm  |
-| `smoke.sh`           | Smoke test with the tenant key from a throwaway Pod (includes a direct TTS call)             |
-| `smoke_api.py`       | The API half of the smoke test (health, `/ws`, chat, speak), run inside that Pod             |
-| `mail/`              | hive-mx, hive's receive-only mail receiver, in its own namespace `mail` (see mail/README.md) |
+| `install.sh`         | Idempotent install/upgrade: Secrets, policy, ResourceQuota, storage, STT, TTS, search, Helm    |
+| `smoke.sh`           | Smoke test with the tenant key from a throwaway Pod (includes a direct TTS call)               |
+| `smoke_api.py`       | The API half of the smoke test (health, `/ws`, chat, speak), run inside that Pod               |
+| `mail/`              | hive-mx, hive's receive-only mail receiver, in its own namespace `mail` (see mail/README.md)   |
 
 ## Versions (all pinned by tag and digest)
 
