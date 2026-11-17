@@ -14,9 +14,11 @@ import { QuorumError } from "./errors.js";
  * as "full requests", "Betty leave" as "Betty Lee", "hive queue" as "high school", "Kubernetes"
  * as "Cuba needs"), the hive's repository names and the project's vocabulary. Sent with
  * every transcription request as prompt and hotwords; QUORUM_TRANSCRIBE_HOTWORDS replaces it.
+ * Order matters: Whisper weighs the first hints most, and with "leave" anywhere but right after
+ * the name, "Betty leave." comes back as "Betty Lee".
  */
 export const DEFAULT_TRANSCRIBE_HOTWORDS =
-  "Betty, hive, hive queue, leave, pull request, PR, issue, board pressure, crux, dibs, docs, " +
+  "Betty, leave, hive, hive queue, pull request, PR, issue, board pressure, crux, dibs, docs, " +
   "homebrew-hive, hotshot, pluk, promptargs, rationguard, quorum, vexa, quorum-companion, " +
   "Kubernetes, KubeCon, CNCF, Spektacular, Spek, Plaud, RFC, inbox, spoke, hub";
 

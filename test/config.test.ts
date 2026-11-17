@@ -19,6 +19,8 @@ describe("loadConfig", () => {
     expect(c.transcriptBuffer).toBe(DEFAULTS.transcriptBuffer);
     expect(c.transcribeHotwords).toContain("pull request");
     expect(c.transcribeHotwords).toContain("Betty");
+    // "leave" right after the name: further down the list "Betty leave." is heard as "Betty Lee".
+    expect(c.transcribeHotwords.slice(0, 2)).toEqual(["Betty", "leave"]);
     expect(c.discordSilenceMs).toBe(500);
     expect(c.discordCommands).toBe("guild");
     expect(c.vexaVoiceDefault).toBe(false);
@@ -54,10 +56,10 @@ describe("loadConfig", () => {
     expect(loadConfig({ QUORUM_COMPANION_EARLY_MS: "250" }).companionEarlyMs).toBe(250);
   });
 
-  it("sends the project's vocabulary as default hotwords, the bot's name and hive first", () => {
+  it("sends the project's vocabulary as default hotwords, the name, leave and hive first", () => {
     const words = loadConfig({}).transcribeHotwords;
     expect(words.join(", ")).toBe(DEFAULT_TRANSCRIBE_HOTWORDS);
-    expect(words.slice(0, 3)).toEqual(["Betty", "hive", "hive queue"]);
+    expect(words.slice(0, 4)).toEqual(["Betty", "leave", "hive", "hive queue"]);
     for (const w of [
       "Kubernetes",
       "KubeCon",
