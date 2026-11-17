@@ -40,8 +40,8 @@ spec:
       automountServiceAccountToken: false
       containers:
         - name: transcription
-          # main-6983af5-quorum (linux/amd64, linux/arm64), hivecommons/vexa 6983af58b (hotwords, warm-up)
-          image: ghcr.io/hivecommons/vexa-transcription-cpu:main-6983af5-quorum@sha256:52b2da5c8c2e7f22f5a5e2fb991a871b80807cdf4f4a849fca3b33db21b030a1
+          # main-3addb0a-quorum (linux/amd64, linux/arm64), hivecommons/vexa 3addb0a (hotwords, warm-up)
+          image: ghcr.io/hivecommons/vexa-transcription-cpu:main-3addb0a-quorum@sha256:5dd732b156a00813e7b02e4d30f2e851647e689ef0f9eb29375d4c511079b097
           env:
             - name: WORKER_ID
               value: "1"
@@ -118,7 +118,7 @@ spec:
         # Fetch faster-whisper `base.en` at a pinned commit of Systran/faster-whisper-base.en into the
         # model cache, and point the cache's refs/main at it so the offline server resolves it.
         - name: fetch-model
-          image: ghcr.io/hivecommons/vexa-transcription-cpu:main-6983af5-quorum@sha256:52b2da5c8c2e7f22f5a5e2fb991a871b80807cdf4f4a849fca3b33db21b030a1
+          image: ghcr.io/hivecommons/vexa-transcription-cpu:main-3addb0a-quorum@sha256:5dd732b156a00813e7b02e4d30f2e851647e689ef0f9eb29375d4c511079b097
           env:
             - name: MODEL_REVISION
               value: 3d3d5dee26484f91867d81cb899cfcf72b96be6c
@@ -148,7 +148,7 @@ spec:
       containers:
         - name: transcription
           # Same image and digest as the batch tier above.
-          image: ghcr.io/hivecommons/vexa-transcription-cpu:main-6983af5-quorum@sha256:52b2da5c8c2e7f22f5a5e2fb991a871b80807cdf4f4a849fca3b33db21b030a1
+          image: ghcr.io/hivecommons/vexa-transcription-cpu:main-3addb0a-quorum@sha256:5dd732b156a00813e7b02e4d30f2e851647e689ef0f9eb29375d4c511079b097
           env:
             - name: WORKER_ID
               value: "rt"

@@ -124,6 +124,10 @@ spec:
       labels:
         app.kubernetes.io/name: searxng
         app.kubernetes.io/part-of: quorum
+      annotations:
+        # SearXNG reads settings.yml only at start. Raise this whenever the searxng-settings
+        # ConfigMap above changes, so applying the file restarts the Pod with the new settings.
+        quorum.hivecommons.dev/settings-revision: "2"
     spec:
       automountServiceAccountToken: false
       securityContext:

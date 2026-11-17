@@ -21,28 +21,28 @@ Quorum (RFC #1) uses one shared Vexa control plane per cluster. On hive-oke it r
 
 ## Versions (all pinned by tag and digest)
 
-Everything Vexa comes from one commit of hivecommons/vexa `main`: 70859c13728b6b819a64bb68cc5a7016e1c81f92 (chart 0.13.4).
+Everything Vexa comes from one commit of hivecommons/vexa `main`: 3addb0a940acc42e899b2748711c93dab2467874 (chart 0.13.4).
 It is upstream Vexa `main` plus our patches (hivecommons/vexa#2 Teams chat-write, #3 speak route, #7 Teams
 per-track capture, #8 Google Meet end of turn, #9 cached and prewarmed short TTS lines).
 Upstream v0.12.28 has no meeting chat-post route and its `/ws` sends no chat events; both
 are on upstream `main`, and upstream publishes control-plane images only for releases.
 
-| Component                                                       | Image                                                                            |
-| --------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| Chart                                                           | `deploy/helm/charts/vexa` at hivecommons/vexa 70859c1 (chart 0.13.4)             |
-| gateway                                                         | `ghcr.io/hivecommons/vexa-gateway:main-d40e078-quorum`                           |
-| admin-api                                                       | `ghcr.io/hivecommons/vexa-admin-api:main-70859c1-quorum`                         |
-| meeting-api                                                     | `ghcr.io/hivecommons/vexa-meeting-api:main-d40e078-quorum`                       |
-| runtime                                                         | `ghcr.io/hivecommons/vexa-runtime:main-70859c1-quorum`                           |
-| meeting bot (from vexa d40e078)                                 | `ghcr.io/hivecommons/vexa-bot:main-d40e078-quorum`                               |
-| CPU transcription (hivecommons/vexa 6983af5: hotwords, warm-up) | `ghcr.io/hivecommons/vexa-transcription-cpu:main-6983af5-quorum`                 |
-| agent-api, agent-worker (pinned, unused)                        | `ghcr.io/hivecommons/vexa-agent-api`, `vexa-agent-worker` `:main-70859c1-quorum` |
-| mcp (pinned, disabled)                                          | `ghcr.io/hivecommons/vexa-mcp:main-70859c1-quorum`                               |
-| postgres                                                        | `docker.io/library/postgres:17.11-alpine`                                        |
-| redis                                                           | `docker.io/valkey/valkey:8.1.11-alpine`                                          |
-| S3                                                              | `docker.io/versity/versitygw:v1.10.0`                                            |
-| TTS (not Vexa; upstream image)                                  | `ghcr.io/remsky/kokoro-fastapi-cpu:v0.10.0`                                      |
-| web search (not Vexa; upstream image)                           | `docker.io/searxng/searxng:2026.11.15-2d500cb6b`                                 |
+| Component                                | Image                                                                            |
+| ---------------------------------------- | -------------------------------------------------------------------------------- |
+| Chart                                    | `deploy/helm/charts/vexa` at hivecommons/vexa 3addb0a (chart 0.13.4)             |
+| gateway                                  | `ghcr.io/hivecommons/vexa-gateway:main-3addb0a-quorum`                           |
+| admin-api                                | `ghcr.io/hivecommons/vexa-admin-api:main-3addb0a-quorum`                         |
+| meeting-api                              | `ghcr.io/hivecommons/vexa-meeting-api:main-3addb0a-quorum`                       |
+| runtime                                  | `ghcr.io/hivecommons/vexa-runtime:main-3addb0a-quorum`                           |
+| meeting bot                              | `ghcr.io/hivecommons/vexa-bot:main-3addb0a-quorum`                               |
+| CPU transcription (hotwords, warm-up)    | `ghcr.io/hivecommons/vexa-transcription-cpu:main-3addb0a-quorum`                 |
+| agent-api, agent-worker (pinned, unused) | `ghcr.io/hivecommons/vexa-agent-api`, `vexa-agent-worker` `:main-3addb0a-quorum` |
+| mcp (pinned, disabled)                   | `ghcr.io/hivecommons/vexa-mcp:main-3addb0a-quorum`                               |
+| postgres                                 | `docker.io/library/postgres:17.11-alpine`                                        |
+| redis                                    | `docker.io/valkey/valkey:8.1.11-alpine`                                          |
+| S3                                       | `docker.io/versity/versitygw:v1.10.0`                                            |
+| TTS (not Vexa; upstream image)           | `ghcr.io/remsky/kokoro-fastapi-cpu:v0.10.0`                                      |
+| web search (not Vexa; upstream image)    | `docker.io/searxng/searxng:2026.11.15-2d500cb6b`                                 |
 
 Digests are in `values.yaml`, `transcription.yaml`, `tts.yaml` and `searxng.yaml`. Each Vexa image is a manifest
 list with linux/amd64 and linux/arm64, built on native runners by `.github/workflows/quorum-images.yml` in
@@ -233,7 +233,7 @@ the upstream Kubernetes docs, it is minted at install time and kept in `vexa-adm
 
 ```bash
 git clone https://github.com/hivecommons/vexa.git /tmp/hivecommons-vexa
-git -C /tmp/hivecommons-vexa checkout 70859c13728b6b819a64bb68cc5a7016e1c81f92   # quorum.vexaCommit in values.yaml
+git -C /tmp/hivecommons-vexa checkout 3addb0a940acc42e899b2748711c93dab2467874   # quorum.vexaCommit in values.yaml
 KUBE_CONTEXT=hive-oke VEXA_CHART=/tmp/hivecommons-vexa/deploy/helm/charts/vexa ./install.sh
 KUBE_CONTEXT=hive-oke ./smoke.sh
 ```

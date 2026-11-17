@@ -1,6 +1,6 @@
 # Vexa Helm values for the shared Quorum meeting service on hive-oke (namespace `meetings`).
 #
-# Chart: deploy/helm/charts/vexa from hivecommons/vexa main at commit 70859c13728b6b819a64bb68cc5a7016e1c81f92 (chart 0.13.4,
+# Chart: deploy/helm/charts/vexa from hivecommons/vexa main at commit 3addb0a940acc42e899b2748711c93dab2467874 (chart 0.13.4,
 # appVersion 0.13.4). Install with ./install.sh, which also creates the Secrets and applies the
 # namespace policy rendered from the `quorum` block below.
 #
@@ -18,7 +18,7 @@
 # ---- Quorum deployment knobs (read by install.sh, ignored by the chart) ----
 quorum:
   # The hivecommons/vexa commit the chart is taken from and every Vexa image is built from.
-  vexaCommit: 70859c13728b6b819a64bb68cc5a7016e1c81f92
+  vexaCommit: 3addb0a940acc42e899b2748711c93dab2467874
   # Most meeting-bot Pods that may run at once in `meetings`. Enforced twice:
   #   1. ResourceQuota `meetings-quota`: pods = controlPlanePods + maxConcurrentBots
   #      (bot Pods are bare Pods the runtime creates, so a quota cannot select only them);
@@ -72,13 +72,13 @@ mcp:
   enabled: false
   image:
     repository: ghcr.io/hivecommons/vexa-mcp
-    tag: main-70859c1-quorum@sha256:c54722400e08af0d405196c5aa746ecb0cc97524413922b48dbc70d31e648cea
+    tag: main-3addb0a-quorum@sha256:d4f802bce02ff8e22022b4f708651d6ba2459772f231b54d09fd73f037d3a84e
 
 gateway:
   replicaCount: 2
   image:
     repository: ghcr.io/hivecommons/vexa-gateway
-    tag: main-d40e078-quorum@sha256:d814fa6910858f9f60625c716be9d9008c7a4a8239b12562398b6ca0ba8874d1
+    tag: main-3addb0a-quorum@sha256:ac40a5d374a8fef37dd4df7a31dc97b83e56555e5b636bf42e58a6d3f4a6691e
   service:
     type: ClusterIP
 
@@ -86,13 +86,13 @@ adminApi:
   replicaCount: 2
   image:
     repository: ghcr.io/hivecommons/vexa-admin-api
-    tag: main-70859c1-quorum@sha256:18b56c39536362cda1354142128b81fce56dfdb2c3a1a2f40216735feaf335a1
+    tag: main-3addb0a-quorum@sha256:5ecf337d6d63c415bc2a0ce6a78e02df8c71e3dc8ecc28cc9486bef3c22a0e63
 
 meetingApi:
   replicaCount: 2
   image:
     repository: ghcr.io/hivecommons/vexa-meeting-api
-    tag: main-d40e078-quorum@sha256:0a661f5f09dd51bedd85ae84cea693f8c757d8e6a45a1255101f6515386aec0a
+    tag: main-3addb0a-quorum@sha256:6f7e881be4f643bdd3b860c50635270e2c3d597f7ad80b476532bee832b3e569
   # Participants see this name; it says the bot takes notes (RFC: behaviour in the meeting).
   defaultBotName: "Hive notes (AI notetaker)"
   transcriptionServiceUrl: http://vexa-transcription:8000
@@ -117,18 +117,16 @@ runtime:
   replicaCount: 1
   image:
     repository: ghcr.io/hivecommons/vexa-runtime
-    tag: main-70859c1-quorum@sha256:e463689e8fdc7225aec0ab6ef1360c33d04f7fb57d97b4e1f34a8404ac2082fc
-  # The gateway, meeting-api and the meeting bot are ahead of quorum.vexaCommit, at hivecommons/vexa
-  # d40e078 (vexa#10 to #13: Teams audio reaches STT within seconds, speak only into a
-  # confirmed-open mic, serial speech, Teams chat send/read, faster Meet chat send, and the speak
-  # result: POST /speak returns request_id, GET /speak/{request_id} reports
-  # queued|speaking|spoken (duration_ms)|failed (reason)). The chart and every other image are
-  # unchanged between the two commits. install.sh also pre-pulls this image on every bot node
-  # (prepull.yaml).
-  browserImage: ghcr.io/hivecommons/vexa-bot:main-d40e078-quorum@sha256:666e911322a523ec63b82dd78c5e380a12263582ff7fd520136658c8cfcf400c
+    tag: main-3addb0a-quorum@sha256:d5a51457840a0e349415e266aa21ad706a75daed9c640c645454b2a620ee3529
+  # The meeting bot, from the same commit as everything else (hivecommons/vexa#15: lines are
+  # synthesized and played sentence by sentence from a per-sentence cache, the microphone is
+  # opened once at join and carries only the speech clip, the Meet final follows the pause by
+  # one transcription round trip, Teams utterances cross whole and Teams chat text is typed in
+  # and checked before send). install.sh also pre-pulls this image on every bot node.
+  browserImage: ghcr.io/hivecommons/vexa-bot:main-3addb0a-quorum@sha256:5ae0a60e4123d7e236b9896f882005201273dc9eb474582b955e9d685d28bda7
   # Agent workers are not used by Quorum (agentApi is off); pinned anyway so nothing is mutable.
-  agentImage: ghcr.io/hivecommons/vexa-agent-api:main-70859c1-quorum@sha256:61b76d9cd2508ea4ad31e6c9df49ab1b44097711233d9b61d84fc798c966eb81
-  agentWorkerImage: ghcr.io/hivecommons/vexa-agent-worker:main-70859c1-quorum@sha256:1ee0d6bdd3c16c984cbb5ec0766f4ca5e563f4c8a5a06e6bd3c9754c4352ff3d
+  agentImage: ghcr.io/hivecommons/vexa-agent-api:main-3addb0a-quorum@sha256:f3e38905b1ed0c2d53e5cc8c205b1d27349b30e5c74df842d01cf6ea2ec18de3
+  agentWorkerImage: ghcr.io/hivecommons/vexa-agent-worker:main-3addb0a-quorum@sha256:4bb8d561bd1e386c2ef3d1539437e133e74eb3342056da3366fe03570e74ddf0
   # Each spawned bot Pod: Guaranteed QoS, request == limit. Sizing per upstream production
   # guidance (deploy docs: ~1.0-1.3Gi steady, Teams spikes past 2Gi; do not go below 2560Mi).
   workloadResources:
@@ -141,10 +139,19 @@ runtime:
   # Spawned bot Pods schedule on arm64 nodes (every hive-oke node today).
   nodeSelector:
     kubernetes.io/arch: arm64
-  # BOT_TTS_PREWARM: short lines a voice bot synthesizes ahead of time per voice, so they play at
-  # once (hivecommons/vexa#9). These are hive Betty's English acknowledgements
-  # (src/pkg/meetings/betty/voice.go); keep them in step when those change.
-  ttsPrewarm: "Let me check on that.|One moment.|Good question, let me look.|Let me see."
+  # BOT_TTS_PREWARM: lines a voice bot synthesizes ahead of time, sentence by sentence and per
+  # voice, so they play at once (hivecommons/vexa#9, #15). These are hive Betty's fixed English
+  # lines: the short spoken intro (src/pkg/config/meetings_persona_spoken.go, with the default
+  # display name), her acknowledgements, progress and goodbye lines
+  # (src/pkg/meetings/betty/voice.go, meetings.LeavingText). The text must match what hive says
+  # exactly; keep them in step when those change.
+  ttsPrewarm: "Hi, I'm Betty Bee from the hive. I take notes and answer questions from the hive. The details are in chat.|Let me check on that.|One moment.|Good question, let me look.|Let me see.|Leaving now.|I'll dig into that and report back.|Still looking into that; I'll report back as soon as I have it.|I'm busy with another question, yours is next.|Did you mean the hive queue?"
+  # BOT_TTS_PREWARM_VOICES: the voices to prewarm at bot start besides the default. hive joins
+  # with voice_id af_heart (the persona's voice), so that is the voice her lines are said in.
+  ttsPrewarmVoices: "af_heart"
+  # BOT_STT_HOTWORDS: vocabulary sent with every transcription request from the bot, the same
+  # list quorum sends for Discord and the companion (src/config.ts DEFAULT_TRANSCRIBE_HOTWORDS).
+  sttHotwords: "Betty, hive, hive queue, leave, pull request, PR, issue, board pressure, crux, dibs, docs, homebrew-hive, hotshot, pluk, promptargs, rationguard, quorum, vexa, quorum-companion, Kubernetes, KubeCon, CNCF, Spektacular, Spek, Plaud, RFC, inbox, spoke, hub"
   # Off: bots run under RuntimeDefault seccomp, as on v0.12. On, the chart runs a hostPath
   # DaemonSet on every node to install a seccomp profile: that writes node files outside
   # `meetings`, and its 4 Pods would take every bot slot in the namespace pod quota.
