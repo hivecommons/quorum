@@ -660,7 +660,10 @@ export class DiscordAdapter implements PlatformAdapter {
           lengths[i] = pcm.length;
         },
         (err: unknown) => {
-          if (i > 0 && !failed) {
+          if (i === 0) {
+            // Set here, ahead of the next sentence's turn, so nothing more of the line is asked for.
+            failed = true;
+          } else if (!failed) {
             this.opts.log.warn("discord: a sentence could not be synthesized; skipped", {
               error: String(err),
             });

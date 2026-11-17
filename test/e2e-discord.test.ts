@@ -590,6 +590,7 @@ describe("Discord speech", () => {
     });
     await until(() => player().played.length === 1);
     expect(await playedValue(0)).toBe(1);
+    await until(() => tts.requests.length === 2);
     expect(tts.requests.map((r) => r.body.input)).toEqual([S1, S2]);
     // The second sentence is still on its way while the first plays.
     expect(tts.byInput.get(S2)?.delayMs).toBeGreaterThan(said.first_audio_ms as number);
