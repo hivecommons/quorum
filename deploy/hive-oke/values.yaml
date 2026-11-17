@@ -150,8 +150,9 @@ runtime:
   # with voice_id af_heart (the persona's voice), so that is the voice her lines are said in.
   ttsPrewarmVoices: "af_heart"
   # BOT_STT_HOTWORDS: vocabulary sent with every transcription request from the bot, the same
-  # list quorum sends for Discord and the companion (src/config.ts DEFAULT_TRANSCRIBE_HOTWORDS).
-  sttHotwords: "Betty, hive, hive queue, leave, pull request, PR, issue, board pressure, crux, dibs, docs, homebrew-hive, hotshot, pluk, promptargs, rationguard, quorum, vexa, quorum-companion, Kubernetes, KubeCon, CNCF, Spektacular, Spek, Plaud, RFC, inbox, spoke, hub"
+  # vocabulary quorum sends for Discord and the companion. "leave" stays right after the name:
+  # with it further down the list, "Betty leave." is heard as "Betty Lee".
+  sttHotwords: "Betty, leave, hive, hive queue, pull request, PR, issue, board pressure, crux, dibs, docs, homebrew-hive, hotshot, pluk, promptargs, rationguard, quorum, vexa, quorum-companion, Kubernetes, KubeCon, CNCF, Spektacular, Spek, Plaud, RFC, inbox, spoke, hub"
   # Off: bots run under RuntimeDefault seccomp, as on v0.12. On, the chart runs a hostPath
   # DaemonSet on every node to install a seccomp profile: that writes node files outside
   # `meetings`, and its 4 Pods would take every bot slot in the namespace pod quota.
