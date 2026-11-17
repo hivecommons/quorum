@@ -23,11 +23,16 @@ certificate (see "STARTTLS" below).
 - Accepts `RCPT TO` only for `hive@<host>` where the host is a hive the hub knows (subdomain, vanity
   or dashboard host). The list comes from `GET /api/mail/hosts` on the hub every 60 seconds; until
   the first list loads, RCPT gets a temporary 451.
-- At most 5 recipients and 2 MB per message, per-IP and per-sender-domain rate limits, at most 100
-  connections, no AUTH, no relay. It never sends mail.
+- At most 5 recipients and 35 MiB per message (`SIZE 36700160`: a 25 MB attachment after base64),
+  per-IP and per-sender-domain rate limits, a daily byte budget per hive (512 MiB), at most 100
+  connections and 8 messages in processing, no AUTH, no relay. It never sends mail.
+- Each message is spooled to the size-limited `emptyDir` at `/var/spool/hive-mx` (1 GiB) while it is
+  processed, never held in memory whole; limits are 512 MiB of memory and 1.5 GiB of ephemeral
+  storage per pod (hivecommons/hive#18564).
 - After DATA it records SPF, DKIM and DMARC alignment, keeps only calendar invites (scheduling
-  fields and join details), Markdown/audio/image attachments, or a proof code, and posts the result
-  to `POST /api/mail/inbound` on the hub. The hub signs it with the target hive's relay key and
+  fields and join details), the text body as a Markdown note, Markdown/audio/video/image
+  attachments, or a proof code, and posts the result to `POST /api/mail/inbound` on the hub
+  (multipart for large deliveries, which the hub relays to the spoke in signed pieces). The hub signs it with the target hive's relay key and
   forwards it; it stores nothing. A hub or spoke that cannot take the mail makes hive-mx answer a
   temporary 451, so the sender's server retries.
 

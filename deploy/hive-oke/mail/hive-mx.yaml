@@ -72,6 +72,14 @@ spec:
               value: /var/run/secrets/hive-mx-tls/tls.crt
             - name: HIVE_MX_TLS_KEY
               value: /var/run/secrets/hive-mx-tls/tls.key
+            # Mail is spooled to disk while it is processed, never held in memory whole
+            # (hivecommons/hive#18564). SIZE is 35 MiB (36700160) by default. At most 8 messages are
+            # processed at once, each needing about the message plus its decoded attachments
+            # (about 65 MB), so the spool stays under 600 MB; the emptyDir below caps it at 1 GiB.
+            - name: HIVE_MX_SPOOL_DIR
+              value: /var/spool/hive-mx
+            - name: HIVE_MX_MAX_CONCURRENT_DATA
+              value: "8"
           ports:
             - name: smtp
               containerPort: 2525
@@ -92,10 +100,12 @@ spec:
           resources:
             requests:
               cpu: 50m
-              memory: 64Mi
+              memory: 128Mi
+              ephemeral-storage: 256Mi
             limits:
-              cpu: 500m
-              memory: 256Mi
+              cpu: "1"
+              memory: 512Mi
+              ephemeral-storage: 1536Mi
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -108,6 +118,9 @@ spec:
             - name: tls
               mountPath: /var/run/secrets/hive-mx-tls
               readOnly: true
+            # The root filesystem is read-only; the spool is the only writable path.
+            - name: spool
+              mountPath: /var/spool/hive-mx
       volumes:
         - name: hub-token
           secret:
@@ -118,6 +131,10 @@ spec:
           secret:
             secretName: hive-mx-tls
             defaultMode: 0440
+        # Size-limited spool for messages in flight; the kubelet evicts the pod past it.
+        - name: spool
+          emptyDir:
+            sizeLimit: 1Gi
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget
