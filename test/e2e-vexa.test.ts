@@ -27,6 +27,8 @@ beforeEach(async () => {
     QUORUM_VEXA_WS_BACKOFF_MIN_MS: "10",
     QUORUM_VEXA_WS_BACKOFF_MAX_MS: "20",
     QUORUM_CHAT_MAX_CHARS: "20",
+    QUORUM_CHAT_CONFIRM_TIMEOUT_MS: "200",
+    QUORUM_CHAT_CONFIRM_POLL_MS: "10",
     QUORUM_LOBBY_TIMEOUT_S: "90",
   });
 });
@@ -482,6 +484,61 @@ describe("chat.post and say", () => {
     expect(await h.call("chat.post", { meeting_id: id, text: "hi" })).toMatchObject({
       ok: false,
       error: { code },
+    });
+  });
+
+  it("answers delivery unconfirmed without confirm, and never reads the delivery record", async () => {
+    const id = await goLive();
+    const r = await h.call("chat.post", { meeting_id: id, text: "hello" });
+    expect(r).toMatchObject({ ok: true, delivery: "unconfirmed" });
+    expect(fake.requests.some((x) => x.method === "GET" && /\/chat\//.test(x.path))).toBe(false);
+  });
+
+  it("confirms a chat line once the bot reports it posted", async () => {
+    const id = await goLive();
+    let reads = 0;
+    fake.on("GET", /\/chat\/req1$/, () => {
+      reads += 1;
+      return { status: 200, body: { status: reads < 3 ? "queued" : "posted" } };
+    });
+    const r = await h.call("chat.post", { meeting_id: id, text: "consent", confirm: true });
+    expect(r).toMatchObject({ ok: true, delivery: "confirmed" });
+    expect(reads).toBe(3);
+  });
+
+  it("answers platform_unavailable with the bot's reason when the send failed", async () => {
+    const id = await goLive();
+    fake.on("GET", /\/chat\/req1$/, {
+      status: 200,
+      body: { status: "failed", reason: "no_composer" },
+    });
+    const r = await h.call("chat.post", { meeting_id: id, text: "consent", confirm: true });
+    expect(r).toMatchObject({ ok: false, error: { code: "platform_unavailable" } });
+    expect((r.error as { message: string }).message).toContain("no_composer");
+  });
+
+  it.each([
+    ["the bot never settles the send", { status: 200, body: { status: "queued" } }],
+    ["Vexa reads the send as unconfirmed", { status: 200, body: { status: "unconfirmed" } }],
+    ["this Vexa has no delivery route", { status: 404, body: { detail: "Not Found" } }],
+  ])("answers delivery unconfirmed when %s", async (_why, reply) => {
+    const id = await goLive();
+    fake.on("GET", /\/chat\/req1$/, reply);
+    const r = await h.call("chat.post", { meeting_id: id, text: "consent", confirm: true });
+    expect(r).toMatchObject({ ok: true, delivery: "unconfirmed" });
+  });
+
+  it("answers delivery unconfirmed when Vexa gives no request id", async () => {
+    const id = await goLive();
+    fake.on("POST", /\/chat$/, { status: 200, body: { status: "queued" } });
+    const r = await h.call("chat.post", { meeting_id: id, text: "consent", confirm: true });
+    expect(r).toMatchObject({ ok: true, delivery: "unconfirmed" });
+  });
+
+  it("refuses a confirm that is not a boolean", async () => {
+    const id = await goLive();
+    expect(await h.call("chat.post", { meeting_id: id, text: "x", confirm: "yes" })).toMatchObject({
+      error: { code: "invalid_argument" },
     });
   });
 

@@ -164,6 +164,19 @@ export class VexaClient {
     return (await this.request<{ request_id?: string }>("POST", path, { text })).data ?? {};
   }
 
+  /**
+   * The delivery record of one chat send (`GET /bots/{platform}/{native_id}/chat/{request_id}`):
+   * `queued`, `posted`, `failed` with the bot's reason, or `unconfirmed`.
+   */
+  async chatStatus(
+    platform: string,
+    nativeId: string,
+    requestId: string,
+  ): Promise<{ status?: string; reason?: string }> {
+    const path = botPath(platform, nativeId) + "/chat/" + encodeURIComponent(requestId);
+    return (await this.request<{ status?: string; reason?: string }>("GET", path)).data ?? {};
+  }
+
   async speak(platform: string, nativeId: string, text: string, voice?: string): Promise<void> {
     await this.request("POST", botPath(platform, nativeId) + "/speak", {
       text,
@@ -194,7 +207,9 @@ export function botPath(platform: string, nativeId: string): string {
 /** The route template for a path, so error messages never carry meeting ids or passcodes. */
 export function routeOf(path: string): string {
   const [base = ""] = path.split("?");
-  return base.replace(/^\/(bots|meetings)\/[^/]+\/[^/]+/, "/$1/{platform}/{native_id}");
+  return base
+    .replace(/^\/(bots|meetings)\/[^/]+\/[^/]+/, "/$1/{platform}/{native_id}")
+    .replace(/\/chat\/[^/]+$/, "/chat/{request_id}");
 }
 
 export const VEXA_STATUS = {

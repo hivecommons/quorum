@@ -176,6 +176,10 @@ export class FakeVexa {
         body: { status: "queued", request_id: "req1", meeting_id: 1, native_meeting_id: m[2] },
       };
     }
+    m = /^\/bots\/([^/]+)\/([^/]+)\/chat\/([^/]+)$/.exec(path);
+    if (rec.method === "GET" && m) {
+      return { status: 200, body: { request_id: m[3], status: "posted", meeting_id: 1 } };
+    }
     m = /^\/bots\/([^/]+)\/([^/]+)\/speak$/.exec(path);
     if (rec.method === "POST" && m) {
       return { status: 200, body: { status: "queued" } };

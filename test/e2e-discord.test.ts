@@ -206,6 +206,7 @@ describe("Discord voice", () => {
     const id = await joinDiscord();
     expect(await H().call("chat.post", { meeting_id: id, text: "notes are on" })).toMatchObject({
       ok: true,
+      delivery: "confirmed",
     });
     expect(channel.sent).toEqual(["notes are on"]);
     channel.sendError = new Error("Missing Permissions");

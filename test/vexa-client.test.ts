@@ -114,6 +114,9 @@ describe("helpers", () => {
   it("builds paths and route templates", () => {
     expect(botPath("teams", "a/b")).toBe("/bots/teams/a%2Fb");
     expect(routeOf("/bots/zoom/123/chat")).toBe("/bots/{platform}/{native_id}/chat");
+    expect(routeOf("/bots/zoom/123/chat/abc")).toBe(
+      "/bots/{platform}/{native_id}/chat/{request_id}",
+    );
     expect(routeOf("/meetings/zoom/123")).toBe("/meetings/{platform}/{native_id}");
     expect(routeOf("/bots?platform=zoom")).toBe("/bots");
     expect(codeForStatus(418)).toBe("upstream_error");

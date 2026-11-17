@@ -1,6 +1,6 @@
 {
   "name": "@hivecommons/quorum",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Quorum: AI agents as live meeting participants, exposed as MCP tools",
   "license": "Apache-2.0",
   "type": "module",

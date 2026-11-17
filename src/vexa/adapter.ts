@@ -1,4 +1,5 @@
-import type { JoinArgs, PlatformAdapter } from "../adapter.js";
+import type { ChatDelivery, ChatOptions, JoinArgs, PlatformAdapter } from "../adapter.js";
+import { DEFAULTS } from "../config.js";
 import { QuorumError } from "../errors.js";
 import type { Logger } from "../log.js";
 import type { Meeting, MeetingState, Registry } from "../meeting.js";
@@ -109,7 +110,16 @@ export interface VexaAdapterOptions {
   log: Logger;
   lobbyTimeoutS: number;
   echoWindowS: number;
+  /** How long a confirmed chat.post waits for the bot's verdict (QUORUM_CHAT_CONFIRM_TIMEOUT_MS). */
+  chatConfirmTimeoutMs?: number;
+  /** Interval between delivery-record reads while waiting (QUORUM_CHAT_CONFIRM_POLL_MS). */
+  chatConfirmPollMs?: number;
 }
+
+/** Delivery-record statuses Vexa answers for one chat send (meeting-api chat_delivery.py). */
+const CHAT_QUEUED = "queued";
+const CHAT_POSTED = "posted";
+const CHAT_FAILED = "failed";
 
 export class VexaAdapter implements PlatformAdapter {
   private readonly echoes = new Map<string, number>();
@@ -208,13 +218,61 @@ export class VexaAdapter implements PlatformAdapter {
     );
   }
 
-  async chat(meeting: Meeting, text: string): Promise<void> {
+  async chat(meeting: Meeting, text: string, opts: ChatOptions = {}): Promise<ChatDelivery> {
+    let requestId: string | undefined;
     try {
-      await this.opts.client.postChat(meeting.platform, meeting.nativeId as string, text);
+      const r = await this.opts.client.postChat(meeting.platform, meeting.nativeId as string, text);
+      requestId = typeof r.request_id === "string" && r.request_id ? r.request_id : undefined;
     } catch (err) {
       throw this.liveActError(err, "chat");
     }
     this.echoes.set(text.trim(), Date.now());
+    if (!opts.confirm || !requestId) {
+      return "unconfirmed";
+    }
+    return this.awaitChatDelivery(meeting, requestId, text);
+  }
+
+  /**
+   * Reads the send's delivery record until the bot settles it. `posted` is confirmed; `failed`
+   * throws platform_unavailable with the bot's reason (for example `no_composer` when the meeting
+   * chat is not open to the bot); no verdict in time, or a Vexa without the status route, is
+   * `unconfirmed`.
+   */
+  private async awaitChatDelivery(
+    meeting: Meeting,
+    requestId: string,
+    line: string,
+  ): Promise<ChatDelivery> {
+    const deadline = Date.now() + (this.opts.chatConfirmTimeoutMs ?? DEFAULTS.chatConfirmTimeoutMs);
+    const pollMs = this.opts.chatConfirmPollMs ?? DEFAULTS.chatConfirmPollMs;
+    for (;;) {
+      let rec: { status?: string; reason?: string };
+      try {
+        rec = await this.opts.client.chatStatus(
+          meeting.platform,
+          meeting.nativeId as string,
+          requestId,
+        );
+      } catch (err) {
+        this.opts.log.warn("chat delivery could not be read", { error: String(err) });
+        return "unconfirmed";
+      }
+      if (rec.status === CHAT_POSTED) {
+        return "confirmed";
+      }
+      if (rec.status === CHAT_FAILED) {
+        this.echoes.delete(line.trim());
+        throw new QuorumError(
+          "platform_unavailable",
+          `the chat line was not posted: ${rec.reason || "unknown"}`,
+        );
+      }
+      if (rec.status !== CHAT_QUEUED || Date.now() + pollMs > deadline) {
+        return "unconfirmed";
+      }
+      await new Promise((r) => setTimeout(r, pollMs));
+    }
   }
 
   async say(meeting: Meeting, text: string): Promise<void> {

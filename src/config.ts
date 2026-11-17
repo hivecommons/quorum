@@ -30,6 +30,8 @@ export const DEFAULTS = {
   transcribeTimeoutMs: 60_000,
   ttsVoice: "af_heart",
   ttsTimeoutMs: 30_000,
+  chatConfirmTimeoutMs: 20_000,
+  chatConfirmPollMs: 500,
 } as const;
 
 export type DiscordCommandScope = "guild" | "global" | "off";
@@ -51,6 +53,8 @@ export interface Config {
   ttsVoice: string;
   ttsTimeoutMs: number;
   chatMaxChars: number;
+  chatConfirmTimeoutMs: number;
+  chatConfirmPollMs: number;
   sayMaxChars: number;
   transcriptBuffer: number;
   lobbyTimeoutS: number;
@@ -139,6 +143,12 @@ export function loadConfig(env: Env = process.env): Config {
     ttsVoice: optional(env, "QUORUM_TTS_VOICE") ?? DEFAULTS.ttsVoice,
     ttsTimeoutMs: positiveInt(env, "QUORUM_TTS_TIMEOUT_MS", DEFAULTS.ttsTimeoutMs),
     chatMaxChars: positiveInt(env, "QUORUM_CHAT_MAX_CHARS", DEFAULTS.chatMaxChars),
+    chatConfirmTimeoutMs: positiveInt(
+      env,
+      "QUORUM_CHAT_CONFIRM_TIMEOUT_MS",
+      DEFAULTS.chatConfirmTimeoutMs,
+    ),
+    chatConfirmPollMs: positiveInt(env, "QUORUM_CHAT_CONFIRM_POLL_MS", DEFAULTS.chatConfirmPollMs),
     sayMaxChars: positiveInt(env, "QUORUM_SAY_MAX_CHARS", DEFAULTS.sayMaxChars),
     transcriptBuffer: positiveInt(env, "QUORUM_TRANSCRIPT_BUFFER", DEFAULTS.transcriptBuffer),
     lobbyTimeoutS: positiveInt(env, "QUORUM_LOBBY_TIMEOUT_S", DEFAULTS.lobbyTimeoutS),

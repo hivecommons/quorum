@@ -22,40 +22,42 @@ Meet, Teams and Zoom go through a shared [Vexa](https://github.com/Vexa-ai/vexa)
 
 Secrets are only ever read from files, on use, so hive can rotate them without a restart; their values are redacted from every log line.
 
-| Variable                        | Default          | Meaning                                                                                                                                     |
-| ------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `QUORUM_LISTEN`                 | `127.0.0.1:8765` | `host:port` to listen on. Keep it on loopback.                                                                                              |
-| `QUORUM_TOKEN_FILE`             | required         | File holding the bearer token for `/mcp` and `/events`.                                                                                     |
-| `QUORUM_VEXA_URL`               | unset            | Vexa gateway base URL. Unset: Meet, Teams and Zoom answer `platform_unavailable`.                                                           |
-| `QUORUM_VEXA_API_KEY_FILE`      | unset            | File holding the tenant Vexa API key (scopes `bot`, `tx`), sent as `X-API-Key`.                                                             |
-| `QUORUM_VEXA_VOICE`             | `false`          | Default for `meeting.join` `voice`: start Vexa bots able to speak.                                                                          |
-| `QUORUM_VEXA_TIMEOUT_MS`        | `15000`          | Timeout for each Vexa REST call.                                                                                                            |
-| `QUORUM_VEXA_WS_BACKOFF_MIN_MS` | `1000`           | First reconnect delay for the Vexa `/ws` feed.                                                                                              |
-| `QUORUM_VEXA_WS_BACKOFF_MAX_MS` | `30000`          | Reconnect delay cap (exponential, jittered).                                                                                                |
-| `QUORUM_LOBBY_TIMEOUT_S`        | `600`            | How long a bot waits in a lobby before the meeting fails with `lobby_timeout`.                                                              |
-| `QUORUM_ECHO_WINDOW_S`          | `120`            | How long the bot's own chat lines are recognised and dropped when Vexa reads them back.                                                     |
-| `QUORUM_DISCORD_TOKEN_FILE`     | unset            | File holding the Discord bot token. Unset: Discord answers `platform_unavailable`.                                                          |
-| `QUORUM_DISCORD_COMMANDS`       | `guild`          | Register `/hive` per guild (instant), `global`, or `off`.                                                                                   |
-| `QUORUM_DISCORD_SILENCE_MS`     | `800`            | Silence that ends a Discord utterance.                                                                                                      |
-| `QUORUM_DISCORD_MIN_SEGMENT_MS` | `300`            | Utterances shorter than this are dropped.                                                                                                   |
-| `QUORUM_DISCORD_MAX_SEGMENT_S`  | `30`             | Longer speech is cut into segments of this length.                                                                                          |
-| `QUORUM_DISCORD_JOIN_TIMEOUT_S` | `20`             | How long joining a voice channel may take.                                                                                                  |
-| `QUORUM_DISCORD_REQUEST_TTL_S`  | `300`            | How long a `/hive join` request waits for hive's approval.                                                                                  |
-| `QUORUM_TRANSCRIBE_URL`         | unset            | Base URL of the Whisper service for Discord audio (`/v1/audio/transcriptions` is appended). Required for Discord.                           |
-| `QUORUM_TRANSCRIBE_TOKEN_FILE`  | unset            | File holding that service's API token, sent as `X-API-Key`.                                                                                 |
-| `QUORUM_TRANSCRIBE_LANGUAGE`    | unset            | Force a transcription language (`en`, `de`, ...); unset lets Whisper detect it.                                                             |
-| `QUORUM_TRANSCRIBE_TIMEOUT_MS`  | `60000`          | Timeout for each transcription request.                                                                                                     |
-| `QUORUM_TTS_URL`                | unset            | Base URL of the Kokoro TTS service for Discord `say` (`/v1/audio/speech` is appended). Unset: Discord `say` answers `platform_unavailable`. |
-| `QUORUM_TTS_TOKEN_FILE`         | unset            | File holding that service's API token, sent as `X-API-Key`.                                                                                 |
-| `QUORUM_TTS_VOICE`              | `af_heart`       | Kokoro voice for Discord `say` when `meeting.join` gives no `voice_id`.                                                                     |
-| `QUORUM_TTS_TIMEOUT_MS`         | `30000`          | Timeout for each TTS request.                                                                                                               |
-| `QUORUM_CHAT_MAX_CHARS`         | `2000`           | Longest `chat.post` text.                                                                                                                   |
-| `QUORUM_SAY_MAX_CHARS`          | `1000`           | Longest `say` text (Vexa's own limit).                                                                                                      |
-| `QUORUM_TRANSCRIPT_BUFFER`      | `2000`           | Final segments kept per meeting for `transcript.read` and SSE replay.                                                                       |
-| `QUORUM_MEETING_RETENTION_S`    | `3600`           | How long an ended meeting stays readable before quorum forgets it.                                                                          |
-| `QUORUM_SSE_HEARTBEAT_S`        | `15`             | Interval of `: ping` comments on `/events`.                                                                                                 |
-| `QUORUM_MAX_BODY_BYTES`         | `1048576`        | Largest `/mcp` request body.                                                                                                                |
-| `QUORUM_LOG_LEVEL`              | `info`           | `debug`, `info`, `warn` or `error`. Logs are JSON lines on stderr.                                                                          |
+| Variable                         | Default          | Meaning                                                                                                                                     |
+| -------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `QUORUM_LISTEN`                  | `127.0.0.1:8765` | `host:port` to listen on. Keep it on loopback.                                                                                              |
+| `QUORUM_TOKEN_FILE`              | required         | File holding the bearer token for `/mcp` and `/events`.                                                                                     |
+| `QUORUM_VEXA_URL`                | unset            | Vexa gateway base URL. Unset: Meet, Teams and Zoom answer `platform_unavailable`.                                                           |
+| `QUORUM_VEXA_API_KEY_FILE`       | unset            | File holding the tenant Vexa API key (scopes `bot`, `tx`), sent as `X-API-Key`.                                                             |
+| `QUORUM_VEXA_VOICE`              | `false`          | Default for `meeting.join` `voice`: start Vexa bots able to speak.                                                                          |
+| `QUORUM_VEXA_TIMEOUT_MS`         | `15000`          | Timeout for each Vexa REST call.                                                                                                            |
+| `QUORUM_VEXA_WS_BACKOFF_MIN_MS`  | `1000`           | First reconnect delay for the Vexa `/ws` feed.                                                                                              |
+| `QUORUM_VEXA_WS_BACKOFF_MAX_MS`  | `30000`          | Reconnect delay cap (exponential, jittered).                                                                                                |
+| `QUORUM_LOBBY_TIMEOUT_S`         | `600`            | How long a bot waits in a lobby before the meeting fails with `lobby_timeout`.                                                              |
+| `QUORUM_ECHO_WINDOW_S`           | `120`            | How long the bot's own chat lines are recognised and dropped when Vexa reads them back.                                                     |
+| `QUORUM_DISCORD_TOKEN_FILE`      | unset            | File holding the Discord bot token. Unset: Discord answers `platform_unavailable`.                                                          |
+| `QUORUM_DISCORD_COMMANDS`        | `guild`          | Register `/hive` per guild (instant), `global`, or `off`.                                                                                   |
+| `QUORUM_DISCORD_SILENCE_MS`      | `800`            | Silence that ends a Discord utterance.                                                                                                      |
+| `QUORUM_DISCORD_MIN_SEGMENT_MS`  | `300`            | Utterances shorter than this are dropped.                                                                                                   |
+| `QUORUM_DISCORD_MAX_SEGMENT_S`   | `30`             | Longer speech is cut into segments of this length.                                                                                          |
+| `QUORUM_DISCORD_JOIN_TIMEOUT_S`  | `20`             | How long joining a voice channel may take.                                                                                                  |
+| `QUORUM_DISCORD_REQUEST_TTL_S`   | `300`            | How long a `/hive join` request waits for hive's approval.                                                                                  |
+| `QUORUM_TRANSCRIBE_URL`          | unset            | Base URL of the Whisper service for Discord audio (`/v1/audio/transcriptions` is appended). Required for Discord.                           |
+| `QUORUM_TRANSCRIBE_TOKEN_FILE`   | unset            | File holding that service's API token, sent as `X-API-Key`.                                                                                 |
+| `QUORUM_TRANSCRIBE_LANGUAGE`     | unset            | Force a transcription language (`en`, `de`, ...); unset lets Whisper detect it.                                                             |
+| `QUORUM_TRANSCRIBE_TIMEOUT_MS`   | `60000`          | Timeout for each transcription request.                                                                                                     |
+| `QUORUM_TTS_URL`                 | unset            | Base URL of the Kokoro TTS service for Discord `say` (`/v1/audio/speech` is appended). Unset: Discord `say` answers `platform_unavailable`. |
+| `QUORUM_TTS_TOKEN_FILE`          | unset            | File holding that service's API token, sent as `X-API-Key`.                                                                                 |
+| `QUORUM_TTS_VOICE`               | `af_heart`       | Kokoro voice for Discord `say` when `meeting.join` gives no `voice_id`.                                                                     |
+| `QUORUM_TTS_TIMEOUT_MS`          | `30000`          | Timeout for each TTS request.                                                                                                               |
+| `QUORUM_CHAT_MAX_CHARS`          | `2000`           | Longest `chat.post` text.                                                                                                                   |
+| `QUORUM_CHAT_CONFIRM_TIMEOUT_MS` | `20000`          | How long `chat.post {confirm:true}` waits for Vexa to report the line posted or failed.                                                     |
+| `QUORUM_CHAT_CONFIRM_POLL_MS`    | `500`            | Interval between delivery-record reads while it waits.                                                                                      |
+| `QUORUM_SAY_MAX_CHARS`           | `1000`           | Longest `say` text (Vexa's own limit).                                                                                                      |
+| `QUORUM_TRANSCRIPT_BUFFER`       | `2000`           | Final segments kept per meeting for `transcript.read` and SSE replay.                                                                       |
+| `QUORUM_MEETING_RETENTION_S`     | `3600`           | How long an ended meeting stays readable before quorum forgets it.                                                                          |
+| `QUORUM_SSE_HEARTBEAT_S`         | `15`             | Interval of `: ping` comments on `/events`.                                                                                                 |
+| `QUORUM_MAX_BODY_BYTES`          | `1048576`        | Largest `/mcp` request body.                                                                                                                |
+| `QUORUM_LOG_LEVEL`               | `info`           | `debug`, `info`, `warn` or `error`. Logs are JSON lines on stderr.                                                                          |
 
 ## Platforms
 
@@ -73,8 +75,8 @@ Members can ask for the bot with `/hive join` from a voice channel. Quorum then 
 Each release attaches `quorum.mjs` (one ESM file, Node 22 or later, amd64 and arm64) and `quorum.mjs.sha256`:
 
 ```bash
-curl -fsSLO https://github.com/hivecommons/quorum/releases/download/v0.2.1/quorum.mjs
-curl -fsSLO https://github.com/hivecommons/quorum/releases/download/v0.2.1/quorum.mjs.sha256
+curl -fsSLO https://github.com/hivecommons/quorum/releases/download/v0.2.2/quorum.mjs
+curl -fsSLO https://github.com/hivecommons/quorum/releases/download/v0.2.2/quorum.mjs.sha256
 sha256sum -c quorum.mjs.sha256
 node quorum.mjs version
 ```

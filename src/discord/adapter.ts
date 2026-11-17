@@ -1,4 +1,4 @@
-import type { JoinArgs, PlatformAdapter } from "../adapter.js";
+import type { ChatDelivery, JoinArgs, PlatformAdapter } from "../adapter.js";
 import type { Config } from "../config.js";
 import { QuorumError } from "../errors.js";
 import type { Logger } from "../log.js";
@@ -448,7 +448,8 @@ export class DiscordAdapter implements PlatformAdapter {
     }
   }
 
-  async chat(meeting: Meeting, text: string): Promise<void> {
+  /** Discord's send call answers once the message exists, so a post is always confirmed. */
+  async chat(meeting: Meeting, text: string): Promise<ChatDelivery> {
     const live = this.live.get(meeting.id);
     if (!live) {
       throw new QuorumError("not_live", "the bot is not in the voice channel");
@@ -461,6 +462,7 @@ export class DiscordAdapter implements PlatformAdapter {
         `discord refused the message: ${(err as Error).message}`,
       );
     }
+    return "confirmed";
   }
 
   /**

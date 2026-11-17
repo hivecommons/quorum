@@ -1,4 +1,4 @@
-import type { PlatformAdapter } from "./adapter.js";
+import type { ChatDelivery, PlatformAdapter } from "./adapter.js";
 import type { Config } from "./config.js";
 import { QuorumError, success, toFailure, type ToolResult } from "./errors.js";
 import type { Logger } from "./log.js";
@@ -290,14 +290,15 @@ export class Quorum {
     });
   }
 
-  chatPost(raw: unknown): Promise<ToolResult<{ posted_at: string }>> {
+  chatPost(raw: unknown): Promise<ToolResult<{ posted_at: string; delivery: ChatDelivery }>> {
     return this.run(async () => {
       const args = asArgs(raw);
       const m = this.meeting(args);
       const text = boundedText(args, this.opts.config.chatMaxChars);
+      const confirm = optionalBool(args, "confirm") ?? false;
       this.requireLive(m);
-      await this.adapter(m.platform).chat(m, text);
-      return { posted_at: new Date().toISOString() };
+      const delivery = await this.adapter(m.platform).chat(m, text, { confirm });
+      return { posted_at: new Date().toISOString(), delivery };
     });
   }
 

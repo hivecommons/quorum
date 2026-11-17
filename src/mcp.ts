@@ -65,10 +65,13 @@ export const TOOLS = [
   },
   {
     name: "chat.post",
-    description: "Post a line in the meeting chat. Returns {posted_at}.",
+    description:
+      "Post a line in the meeting chat. Returns {posted_at, delivery}. With confirm:true it waits " +
+      "for the platform to report the line in the meeting: delivery is confirmed, or unconfirmed " +
+      "when no verdict came in time; a send the platform reports as failed is platform_unavailable.",
     inputSchema: {
       type: "object",
-      properties: { meeting_id: meetingId, text: { type: "string" } },
+      properties: { meeting_id: meetingId, text: { type: "string" }, confirm: { type: "boolean" } },
       required: ["meeting_id", "text"],
     },
   },
