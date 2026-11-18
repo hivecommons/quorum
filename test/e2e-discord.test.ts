@@ -21,6 +21,7 @@ import {
 } from "./helpers/fakeDiscord.js";
 import { pcmFrames, upsampleToStereo48k } from "../src/discord/audio.js";
 import { fadeEdges } from "../src/discord/speech.js";
+import { renderListeningTone } from "../src/tone.js";
 import {
   openSse,
   startHarness,
@@ -1104,6 +1105,75 @@ describe("DiscordAdapter lifecycle", () => {
     ).toMatchObject({
       error: { code: "platform_unavailable", message: expect.stringContaining("still connecting") },
     });
+  });
+});
+
+describe("Discord listening tone", () => {
+  const toneFrames = (): Buffer[] => pcmFrames(upsampleToStereo48k(renderListeningTone()));
+
+  it("plays the chime at once as 48 kHz stereo Opus and answers played:true", async () => {
+    await boot(ttsEnv());
+    const id = await joinDiscord();
+    expect(await H().call("say.tone", { meeting_id: id })).toEqual({ ok: true, played: true });
+    expect(player().played.length).toBe(1);
+    const got = await packets(player().played[0] as never);
+    expect(got.length).toBe(toneFrames().length);
+    expect(tts.requests.length).toBe(0);
+    expect(rt.encodersFreed).toBe(1);
+    // While it plays a second request is dropped; once it finished, the next one plays.
+    expect(await H().call("say.tone", { meeting_id: id })).toEqual({ ok: true, played: false });
+    player().finish();
+    await new Promise((r) => setImmediate(r));
+    expect(await H().call("say.tone", { meeting_id: id })).toEqual({ ok: true, played: true });
+    expect(player().played.length).toBe(2);
+    player().finish();
+  });
+
+  it("is dropped while a line is queued or playing, and never queues behind it", async () => {
+    await boot(ttsEnv());
+    const id = await joinDiscord();
+    tts.replies.push({ status: 200, body: clip(1) });
+    await H().call("say", { meeting_id: id, text: "Hello, I am Betty." });
+    await until(() => player().played.length === 1);
+    expect(await H().call("say.tone", { meeting_id: id })).toEqual({ ok: true, played: false });
+    expect(player().played.length).toBe(1);
+    player().finish();
+  });
+
+  it("is cut cleanly when a line starts during it, and the line plays", async () => {
+    await boot(ttsEnv());
+    const id = await joinDiscord();
+    expect(await H().call("say.tone", { meeting_id: id })).toMatchObject({ played: true });
+    tts.replies.push({ status: 200, body: clip(7) });
+    await H().call("say", { meeting_id: id, text: "Hello, I am Betty." });
+    expect(player().stops).toBe(1);
+    await until(() => player().played.length === 2);
+    expect(await playedValue(1)).toBe(7);
+    player().finish();
+  });
+
+  it("is dropped when the bot has no voice (no TTS) and when the bot is no longer in the channel", async () => {
+    await boot();
+    const id = await joinDiscord();
+    expect(await H().call("say.tone", { meeting_id: id })).toEqual({ ok: true, played: false });
+    await H().call("meeting.leave", { meeting_id: id });
+    expect(await H().call("say.tone", { meeting_id: id })).toMatchObject({
+      ok: false,
+      error: { code: "not_live" },
+    });
+    const meeting = H().q.quorum.registry.get(id);
+    const adapter = H().q.quorum["adapter"]("discord");
+    expect(await adapter.tone?.(meeting as never)).toBe(false);
+  });
+
+  it("answers without an error when the player fails, and frees the player for the next tone", async () => {
+    await boot(ttsEnv());
+    const id = await joinDiscord();
+    player().playError = new Error("boom");
+    expect(await H().call("say.tone", { meeting_id: id })).toEqual({ ok: true, played: true });
+    // The failed play frees the player: a tone right after is allowed again.
+    await new Promise((r) => setImmediate(r));
+    expect(await H().call("say.tone", { meeting_id: id })).toEqual({ ok: true, played: true });
   });
 });
 

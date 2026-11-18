@@ -18,6 +18,7 @@ import {
   Utterance,
 } from "./audio.js";
 import { SpeechSynth, splitSentences } from "./speech.js";
+import { renderListeningTone } from "../tone.js";
 import { nameHints, type Transcriber } from "./transcribe.js";
 import type { TtsClient } from "./tts.js";
 import type {
@@ -81,6 +82,8 @@ interface Live {
   /** Clips in `say` order; each resolves to 48 kHz stereo PCM, or undefined if synthesis failed. */
   clips: Promise<Buffer | undefined>[];
   playing: boolean;
+  /** The listening tone is playing now; a `say` cuts it and a second tone is dropped. */
+  toning: boolean;
   /** Settles when the queued speech has all played; undefined before the first clip. */
   drained?: Promise<void>;
   /** Per speaker: segments waiting for transcription, and whether one is being transcribed. */
@@ -137,6 +140,8 @@ export class DiscordAdapter implements PlatformAdapter {
   private readonly now: () => number;
   /** Synthesis with the clip cache, shared by every meeting; undefined without QUORUM_TTS_URL. */
   private readonly synth: SpeechSynth | undefined;
+  /** The rendered listening tone (24 kHz mono), made on first use. */
+  private toneClip: Buffer | undefined;
 
   constructor(private readonly opts: DiscordAdapterOptions) {
     this.client = opts.runtime.createClient({ messageContent: true });
@@ -330,6 +335,7 @@ export class DiscordAdapter implements PlatformAdapter {
       player: undefined,
       clips: [],
       playing: false,
+      toning: false,
       stt: new Map(),
     };
     if (this.opts.tts) {
@@ -675,6 +681,7 @@ export class DiscordAdapter implements PlatformAdapter {
     for (const clip of clips) {
       live.clips.push(clip.catch(() => undefined));
     }
+    this.cutTone(live);
     this.drain(meeting, live);
     try {
       await clips[0];
@@ -693,6 +700,48 @@ export class DiscordAdapter implements PlatformAdapter {
       synthMs: allCached ? 0 : firstAudioMs,
       cached: allCached,
     };
+  }
+
+  /**
+   * Plays the listening tone into the channel at once and does not wait for it. Dropped (false)
+   * when the bot cannot speak (no TTS configured, so no player) or is not in the channel, when a
+   * line is queued or playing, or when a tone is already playing. A `say` that starts during the
+   * tone cuts it (cutTone), so the tone never delays speech. Never throws.
+   */
+  async tone(meeting: Meeting): Promise<boolean> {
+    const live = this.live.get(meeting.id);
+    if (!live?.player || live.playing || live.clips.length > 0 || live.toning) {
+      return false;
+    }
+    try {
+      live.toning = true;
+      void this.play(live, upsampleToStereo48k(this.tonePcm())).then(
+        () => {
+          live.toning = false;
+        },
+        () => {
+          live.toning = false;
+        },
+      );
+      return true;
+    } catch (err) {
+      live.toning = false;
+      this.opts.log.warn("discord: listening tone not played", { error: String(err) });
+      return false;
+    }
+  }
+
+  /** The chime is rendered on first use and kept: it is the same bytes every time. */
+  private tonePcm(): Buffer {
+    this.toneClip ??= renderListeningTone();
+    return this.toneClip;
+  }
+
+  /** Stops a playing tone so speech starts clean; a no-op when none is playing. */
+  private cutTone(live: Live): void {
+    if (live.toning) {
+      live.player?.stop(true);
+    }
   }
 
   /** Synthesizes fixed lines into the clip cache in the background (say.prewarm). */
