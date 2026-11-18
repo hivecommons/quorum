@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { addSecret } from "./log.js";
 import { QuorumError } from "./errors.js";
+import { DEFAULT_ZOOM_HOSTED_DOMAINS, parseHostedZoomList } from "./urls.js";
 
 /**
  * Runtime configuration, read once from the environment. Every numeric limit is an env var with
@@ -79,6 +80,11 @@ export interface Config {
   transcribeLanguage: string | undefined;
   /** Vocabulary for the transcription prompt and hotwords (QUORUM_TRANSCRIBE_HOTWORDS, comma-separated). */
   transcribeHotwords: string[];
+  /**
+   * Hostnames accepted as Zoom fronted on an organisation's domain (QUORUM_ZOOM_HOSTED_DOMAINS,
+   * comma-separated; "*.x" or ".x" also matches subdomains). Empty turns the branch off.
+   */
+  zoomHostedDomains: string[];
   ttsUrl: string | undefined;
   ttsTokenFile: string | undefined;
   ttsVoice: string;
@@ -181,6 +187,19 @@ function bool(env: Env, name: string): boolean {
   throw new Error(`${name} must be true or false, got ${JSON.stringify(v)}`);
 }
 
+/** Unset: the default allowlist. Set but empty: the hosted-Zoom branch is off. */
+function hostedZoomDomains(env: Env): string[] {
+  const raw = env["QUORUM_ZOOM_HOSTED_DOMAINS"];
+  if (raw === undefined) {
+    return [...DEFAULT_ZOOM_HOSTED_DOMAINS];
+  }
+  try {
+    return parseHostedZoomList(raw);
+  } catch (err) {
+    throw new Error(`QUORUM_ZOOM_HOSTED_DOMAINS: ${(err as Error).message}`);
+  }
+}
+
 function commandScope(env: Env): DiscordCommandScope {
   const v = optional(env, "QUORUM_DISCORD_COMMANDS") ?? "guild";
   if (v === "guild" || v === "global" || v === "off") {
@@ -207,6 +226,7 @@ export function loadConfig(env: Env = process.env): Config {
       .split(",")
       .map((w) => w.trim())
       .filter(Boolean),
+    zoomHostedDomains: hostedZoomDomains(env),
     ttsUrl: optional(env, "QUORUM_TTS_URL")?.replace(/\/+$/, ""),
     ttsTokenFile: optional(env, "QUORUM_TTS_TOKEN_FILE"),
     ttsVoice: optional(env, "QUORUM_TTS_VOICE") ?? DEFAULTS.ttsVoice,

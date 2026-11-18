@@ -206,7 +206,9 @@ export class Quorum {
     if (!displayName) {
       throw new QuorumError("invalid_argument", "display_name must be a non-empty string");
     }
-    const parsed = parseMeetingUrl(url);
+    const parsed = parseMeetingUrl(url, {
+      zoomHostedDomains: this.opts.config.zoomHostedDomains,
+    });
     if (platformArg && platformArg !== parsed.platform) {
       throw new QuorumError(
         "invalid_argument",

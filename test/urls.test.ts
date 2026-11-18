@@ -1,7 +1,12 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { QuorumError } from "../src/errors.js";
-import { hostIs, parseMeetingUrl } from "../src/urls.js";
+import {
+  DEFAULT_ZOOM_HOSTED_DOMAINS,
+  hostIs,
+  parseHostedZoomList,
+  parseMeetingUrl,
+} from "../src/urls.js";
 
 describe("parseMeetingUrl: Google Meet", () => {
   it.each([
@@ -126,7 +131,6 @@ describe("parseMeetingUrl: Zoom", () => {
       "91234567890",
       "uuid-1",
     ],
-    ["https://events.example.org/j/9123456789?pwd=hosted", "9123456789", "hosted"],
     ["1234567890", "1234567890", undefined],
   ])("%s", (url, id, passcode) => {
     const r = parseMeetingUrl(url);
@@ -154,6 +158,89 @@ describe("parseMeetingUrl: Zoom", () => {
     ["https://example.org/meeting/91234567890", /unsupported meeting host/],
   ])("rejects %s", (url, msg) => {
     expect(() => parseMeetingUrl(url)).toThrow(msg);
+  });
+});
+
+describe("parseMeetingUrl: hosted Zoom allowlist", () => {
+  const LFX = "zoom-lfx.platform.linuxfoundation.org";
+  const path = "/j/1234567890?pwd=x";
+
+  it("defaults to the LFX host only", () => {
+    expect(DEFAULT_ZOOM_HOSTED_DOMAINS).toEqual([LFX]);
+    expect(parseMeetingUrl(`https://${LFX}${path}`)).toMatchObject({ platform: "zoom" });
+    expect(parseMeetingUrl(`https://${LFX.toUpperCase()}${path}`).platform).toBe("zoom");
+  });
+
+  it.each([
+    "https://events.example.org/j/9123456789?pwd=hosted",
+    `https://${LFX}.evil.com${path}`,
+    `https://evilzoom-lfx.platform.linuxfoundation.org${path}`,
+    `https://evil.${LFX}${path}`,
+    `https://${LFX}@evil.com${path}`,
+    "https://127.0.0.1/j/1234567890?pwd=x",
+    "https://[::1]/j/1234567890?pwd=x",
+    "https://[2001:db8::1]/j/1234567890?pwd=x",
+    "https://2130706433/j/1234567890?pwd=x",
+    "https://localhost/j/1234567890?pwd=x",
+    "https://intranet/j/1234567890?pwd=x",
+  ])("refuses %s", (url) => {
+    expect(() => parseMeetingUrl(url)).toThrow(QuorumError);
+  });
+
+  it("refuses an IP literal or localhost even when listed", () => {
+    expect(() => parseHostedZoomList("127.0.0.1")).toThrow(/invalid hosted Zoom domain/);
+    expect(() => parseHostedZoomList("[::1]")).toThrow(/invalid hosted Zoom domain/);
+    expect(() => parseHostedZoomList("localhost")).toThrow(/invalid hosted Zoom domain/);
+    expect(() => parseHostedZoomList("intranet")).toThrow(/invalid hosted Zoom domain/);
+    expect(() => parseHostedZoomList("user@zoom.example.org")).toThrow(/invalid/);
+  });
+
+  it("refuses credentials in the URL even for an allowed host", () => {
+    expect(() => parseMeetingUrl(`https://user:pass@${LFX}${path}`)).toThrow(/credentials/);
+  });
+
+  it("refuses non-default ports and non-https schemes for an allowed host", () => {
+    expect(() => parseMeetingUrl(`https://${LFX}:8443${path}`)).toThrow(/port/);
+    expect(() => parseMeetingUrl(`http://${LFX}${path}`)).toThrow(/https/);
+    expect(parseMeetingUrl(`https://${LFX}:443${path}`).platform).toBe("zoom");
+  });
+
+  it("accepts a port only when the allowlist entry names it", () => {
+    const opts = { zoomHostedDomains: ["zoom.example.org:8443"] };
+    expect(parseMeetingUrl(`https://zoom.example.org:8443${path}`, opts).platform).toBe("zoom");
+    expect(() => parseMeetingUrl(`https://zoom.example.org${path}`, opts)).toThrow(QuorumError);
+  });
+
+  it("an empty allowlist turns the hosted branch off", () => {
+    expect(() => parseMeetingUrl(`https://${LFX}${path}`, { zoomHostedDomains: [] })).toThrow(
+      /unsupported meeting host/,
+    );
+    expect(parseHostedZoomList("")).toEqual([]);
+    expect(parseHostedZoomList(" , ")).toEqual([]);
+  });
+
+  it("an env-style list can add a second domain", () => {
+    const opts = { zoomHostedDomains: parseHostedZoomList(`${LFX}, Events.Example.org`) };
+    expect(parseMeetingUrl(`https://events.example.org${path}`, opts).platform).toBe("zoom");
+    expect(parseMeetingUrl(`https://${LFX}${path}`, opts).platform).toBe("zoom");
+    expect(() => parseMeetingUrl(`https://other.example.org${path}`, opts)).toThrow(QuorumError);
+  });
+
+  it.each(["*.example.org", ".example.org"])("suffix entry %s matches subdomains only", (entry) => {
+    const opts = { zoomHostedDomains: [entry] };
+    expect(parseMeetingUrl(`https://a.example.org${path}`, opts).platform).toBe("zoom");
+    expect(parseMeetingUrl(`https://a.b.example.org${path}`, opts).platform).toBe("zoom");
+    expect(() => parseMeetingUrl(`https://example.org${path}`, opts)).toThrow(QuorumError);
+    expect(() => parseMeetingUrl(`https://evilexample.org${path}`, opts)).toThrow(QuorumError);
+    expect(() => parseMeetingUrl(`https://a.example.org.evil.com${path}`, opts)).toThrow(
+      QuorumError,
+    );
+  });
+
+  it("does not weaken the zoom.us branch when the allowlist is empty", () => {
+    expect(
+      parseMeetingUrl("https://zoom.us/j/1234567890?pwd=x", { zoomHostedDomains: [] }).platform,
+    ).toBe("zoom");
   });
 });
 

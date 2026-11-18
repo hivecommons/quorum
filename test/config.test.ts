@@ -10,6 +10,26 @@ import { QuorumError } from "../src/errors.js";
 import { clearSecrets, redact } from "../src/log.js";
 import { tempDir, writeSecret } from "./helpers/harness.js";
 
+describe("loadConfig: QUORUM_ZOOM_HOSTED_DOMAINS", () => {
+  it("defaults to the LFX host only", () => {
+    expect(loadConfig({}).zoomHostedDomains).toEqual(["zoom-lfx.platform.linuxfoundation.org"]);
+  });
+
+  it("an explicitly empty value turns the branch off", () => {
+    expect(loadConfig({ QUORUM_ZOOM_HOSTED_DOMAINS: "" }).zoomHostedDomains).toEqual([]);
+  });
+
+  it("reads a comma-separated list and rejects an unsafe entry", () => {
+    expect(
+      loadConfig({ QUORUM_ZOOM_HOSTED_DOMAINS: "a.example.org, *.b.example.org" })
+        .zoomHostedDomains,
+    ).toEqual(["a.example.org", "*.b.example.org"]);
+    expect(() => loadConfig({ QUORUM_ZOOM_HOSTED_DOMAINS: "127.0.0.1" })).toThrow(
+      /QUORUM_ZOOM_HOSTED_DOMAINS/,
+    );
+  });
+});
+
 describe("loadConfig", () => {
   it("uses the contract defaults", () => {
     const c = loadConfig({});
