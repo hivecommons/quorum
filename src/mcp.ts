@@ -90,6 +90,20 @@ export const TOOLS = [
     },
   },
   {
+    name: "say.tone",
+    description:
+      "Play the listening tone: a short, soft two-note chime that tells the room the bot heard " +
+      "its name and is about to answer. Not speech. Returns {played}: true when the bot was " +
+      "asked to play it, false when it was dropped on purpose (a line is being spoken, the bot " +
+      "has no voice, or the platform has no tone). Never waits for the sound and never queues " +
+      "behind speech.",
+    inputSchema: {
+      type: "object",
+      properties: { meeting_id: meetingId },
+      required: ["meeting_id"],
+    },
+  },
+  {
     name: "say.prewarm",
     description:
       "Get fixed lines (an introduction, acknowledgements, a goodbye) ready so a later say of " +
@@ -128,6 +142,8 @@ export function callTool(q: Quorum, name: string, args: unknown): Promise<ToolRe
       return q.chatPost(args);
     case "say":
       return q.say(args);
+    case "say.tone":
+      return q.sayTone(args);
     case "say.prewarm":
       return q.sayPrewarm(args);
     case "meeting.delete":

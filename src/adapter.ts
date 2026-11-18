@@ -25,6 +25,13 @@ export interface PlatformAdapter {
    * queued for synthesis; a platform that cannot prepare speech leaves this out.
    */
   prewarm?(meeting: Meeting, lines: string[]): Promise<number>;
+  /**
+   * Plays the listening tone (say.tone): a short chime, not speech. Resolves true when the bot was
+   * asked to play it, false when it was dropped on purpose (a line is being spoken, or the
+   * meeting has no voice). It never waits for the sound and never queues behind speech; a
+   * platform without it leaves this out.
+   */
+  tone?(meeting: Meeting): Promise<boolean>;
   /** Erases the transcript upstream (quorum clears its own buffer afterwards). */
   erase(meeting: Meeting): Promise<void>;
 }

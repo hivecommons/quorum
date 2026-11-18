@@ -638,6 +638,45 @@ describe("chat.post and say", () => {
       });
     }
   });
+  it("plays the listening tone, never behind speech, and drops it when it cannot", async () => {
+    const id = await goLive();
+    // No voice: dropped, nothing sent.
+    expect(await h.call("say.tone", { meeting_id: id })).toEqual({ ok: true, played: false });
+    expect(fake.requests.filter((r) => r.path.endsWith("/speak"))).toHaveLength(0);
+    const live = h.q.quorum.registry.get(id);
+    if (live) live.voice = true;
+    // Idle: one speak request with the reserved line, no status polling.
+    fake.on("POST", /\/speak$/, { status: 200, body: { status: "queued" } });
+    expect(await h.call("say.tone", { meeting_id: id })).toEqual({ ok: true, played: true });
+    const sent = fake.requests.filter((r) => r.path.endsWith("/speak"));
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.body).toEqual({ text: "[[hive:listening-tone]]" });
+    // A line being said: the tone is dropped and sends nothing.
+    let release = false;
+    fake.on("POST", /\/speak$/, { status: 200, body: { status: "queued", request_id: "t1" } });
+    fake.on("GET", /\/speak\/t1$/, () => {
+      const speaking = !release;
+      return {
+        status: 200,
+        body: speaking ? { status: "speaking" } : { status: "spoken", duration_ms: 900 },
+      };
+    });
+    const said = h.call("say", { meeting_id: id, text: "Here is the answer." });
+    await until(() => fake.requests.filter((r) => r.path.endsWith("/speak")).length === 2);
+    expect(await h.call("say.tone", { meeting_id: id })).toEqual({ ok: true, played: false });
+    expect(fake.requests.filter((r) => r.path.endsWith("/speak"))).toHaveLength(2);
+    release = true;
+    await said;
+    // A bot that refuses it (not admitted) is a dropped tone, not an error.
+    fake.on("POST", /\/speak$/, { status: 409, body: { detail: "not admitted" } });
+    expect(await h.call("say.tone", { meeting_id: id })).toEqual({ ok: true, played: false });
+    // Unknown meeting.
+    expect(await h.call("say.tone", { meeting_id: "m_missing" })).toMatchObject({
+      ok: false,
+      error: { code: "not_found" },
+    });
+  });
+
   it("plays says strictly one after another and reports the clip's real duration", async () => {
     const id = await goLive();
     const live = h.q.quorum.registry.get(id);
@@ -1064,7 +1103,7 @@ describe("meeting.leave, meeting.delete and status", () => {
 });
 
 describe("tool surface", () => {
-  it("lists the eight tools and rejects unknown ones", async () => {
+  it("lists the nine tools and rejects unknown ones", async () => {
     const tools = await h.raw.listTools();
     expect(tools.tools.map((t) => t.name)).toEqual([
       "meeting.join",
@@ -1073,6 +1112,7 @@ describe("tool surface", () => {
       "transcript.read",
       "chat.post",
       "say",
+      "say.tone",
       "say.prewarm",
       "meeting.delete",
     ]);

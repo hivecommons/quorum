@@ -359,6 +359,20 @@ export class Quorum {
     });
   }
 
+  /**
+   * Plays the listening tone, a short chime. Never waits for the sound and never queues behind
+   * speech: {played:false} when it was dropped (speech in progress, no voice, or a platform
+   * without a tone).
+   */
+  sayTone(raw: unknown): Promise<ToolResult<{ played: boolean }>> {
+    return this.run(async () => {
+      const m = this.meeting(asArgs(raw));
+      this.requireLive(m);
+      const adapter = this.adapter(m.platform);
+      return { played: adapter.tone ? await adapter.tone(m) : false };
+    });
+  }
+
   /** Gets fixed lines ready to be spoken at once; a platform that cannot answers queued 0. */
   sayPrewarm(raw: unknown): Promise<ToolResult<{ queued: number }>> {
     return this.run(async () => {

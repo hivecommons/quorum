@@ -149,11 +149,20 @@ function durationOf(v: unknown): number | undefined {
   return typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.round(v) : undefined;
 }
 
+/**
+ * The reserved line the bot plays as its listening tone instead of synthesizing it (the same
+ * constant is in the bot's listening-tone.ts). It rides the existing speak route, so no contract
+ * changes; it is never a word a person would have said to be spoken.
+ */
+export const LISTENING_TONE_TEXT = "[[hive:listening-tone]]";
+
 export class VexaAdapter implements PlatformAdapter {
   private readonly echoes = new Map<string, number>();
   private readonly chatSeen = new WeakMap<Meeting, Set<string>>();
   /** Each meeting's last queued say, settled either way: the next say starts after it. */
   private readonly sayQueues = new WeakMap<Meeting, Promise<void>>();
+  /** Lines being said per meeting, from the request until it settles (the tone yields to them). */
+  private readonly saysInFlight = new WeakMap<Meeting, number>();
   /** The last chat line sent without waiting for its delivery, so a leave can wait for it. */
   private readonly lastChat = new WeakMap<Meeting, { requestId: string; text: string }>();
 
@@ -358,7 +367,12 @@ export class VexaAdapter implements PlatformAdapter {
    */
   say(meeting: Meeting, text: string): Promise<SayOutcome> {
     const prev = this.sayQueues.get(meeting) ?? Promise.resolve();
+    this.saysInFlight.set(meeting, (this.saysInFlight.get(meeting) ?? 0) + 1);
     const run = prev.then(() => this.speakOne(meeting, text));
+    const settled = (): void => {
+      this.saysInFlight.set(meeting, (this.saysInFlight.get(meeting) ?? 1) - 1);
+    };
+    void run.then(settled, settled);
     this.sayQueues.set(
       meeting,
       run.then(
@@ -367,6 +381,29 @@ export class VexaAdapter implements PlatformAdapter {
       ),
     );
     return run;
+  }
+
+  /**
+   * Asks the bot to play the listening tone. Dropped (false) with no request when the meeting has
+   * no voice or a line is being said: the tone never queues behind speech. The bot plays it at
+   * once from a pre-rendered clip and drops it itself when its audio is busy; this does not wait
+   * for the sound, and a failed request is dropped, never thrown.
+   */
+  async tone(meeting: Meeting): Promise<boolean> {
+    if (!meeting.voice || (this.saysInFlight.get(meeting) ?? 0) > 0) {
+      return false;
+    }
+    try {
+      await this.opts.client.speak(
+        meeting.platform,
+        meeting.nativeId as string,
+        LISTENING_TONE_TEXT,
+      );
+      return true;
+    } catch (err) {
+      this.opts.log.warn("listening tone not sent", { error: String(err) });
+      return false;
+    }
   }
 
   private async speakOne(meeting: Meeting, text: string): Promise<SayOutcome> {

@@ -8,8 +8,8 @@ import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-/** The tools docs/contract.md lists: join, leave, status, transcript.read, chat.post, say, say.prewarm, delete. */
-const EXPECTED_TOOLS = 8;
+/** The tools docs/contract.md lists: join, leave, status, transcript.read, chat.post, say, say.tone, say.prewarm, delete. */
+const EXPECTED_TOOLS = 9;
 const bundle = resolve(process.argv[2] ?? "dist/quorum.mjs");
 const withDavey = process.argv.includes("--with-davey");
 const dir = mkdtempSync(join(tmpdir(), "quorum-smoke-"));
