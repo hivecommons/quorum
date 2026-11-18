@@ -196,7 +196,7 @@ function hostedZoomDomains(env: Env): string[] {
   try {
     return parseHostedZoomList(raw);
   } catch (err) {
-    throw new Error(`QUORUM_ZOOM_HOSTED_DOMAINS: ${(err as Error).message}`);
+    throw new Error(`QUORUM_ZOOM_HOSTED_DOMAINS: ${(err as Error).message}`, { cause: err });
   }
 }
 
