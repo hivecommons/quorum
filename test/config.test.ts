@@ -54,6 +54,8 @@ describe("loadConfig", () => {
       sayPrewarmMaxLines: 32,
       sayPollMs: 200,
       companionEarlyMs: 100,
+      companionConnectedMs: 5000,
+      companionToneTtlMs: 4000,
     });
   });
 
@@ -74,6 +76,9 @@ describe("loadConfig", () => {
       companionEarlyMs: 0,
     });
     expect(loadConfig({ QUORUM_COMPANION_EARLY_MS: "250" }).companionEarlyMs).toBe(250);
+    expect(
+      loadConfig({ QUORUM_COMPANION_CONNECTED_MS: "9000", QUORUM_COMPANION_TONE_TTL_MS: "1500" }),
+    ).toMatchObject({ companionConnectedMs: 9000, companionToneTtlMs: 1500 });
   });
 
   it("sends the project's vocabulary as default hotwords, the name, leave and hive first", () => {

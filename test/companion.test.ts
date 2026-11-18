@@ -141,6 +141,69 @@ describe("companion adapter without the platform plumbing", () => {
   });
 });
 
+describe("companion listening tone", () => {
+  const CONNECTED_MS = 5000;
+  const TTL_MS = 4000;
+  const T0 = 50_000;
+
+  async function rig() {
+    const clock = { ms: T0 };
+    const adapter = new CompanionAdapter({
+      config: loadConfig({
+        QUORUM_COMPANION_CONNECTED_MS: String(CONNECTED_MS),
+        QUORUM_COMPANION_TONE_TTL_MS: String(TTL_MS),
+      }),
+      log: silentLogger,
+      transcriber: { transcribe: () => Promise.resolve("") } as unknown as Transcriber,
+      now: () => clock.ms,
+    });
+    const meeting = new Meeting({ platform: "companion", bufferSize: 10 });
+    await adapter.join(meeting, { displayName: "Betty", voice: false });
+    return { adapter, meeting, clock };
+  }
+
+  it("is dropped until the companion is fetching its outbox, then delivered once", async () => {
+    const r = await rig();
+    // No fetch yet: nobody would hear it.
+    expect(await r.adapter.tone(r.meeting)).toBe(false);
+    expect(r.adapter.outbox(r.meeting, 0)).toEqual({ lines: [], next_seq: 0, tone: false });
+    r.clock.ms += 1000;
+    expect(await r.adapter.tone(r.meeting)).toBe(true);
+    // A second tone while the first waits to be fetched is dropped: one chime.
+    expect(await r.adapter.tone(r.meeting)).toBe(false);
+    r.clock.ms += 1000;
+    expect(r.adapter.outbox(r.meeting, 0).tone).toBe(true);
+    expect(r.adapter.outbox(r.meeting, 0).tone).toBe(false);
+    // Fetched, so the next one plays again.
+    expect(await r.adapter.tone(r.meeting)).toBe(true);
+    expect(r.adapter.outbox(r.meeting, 0).tone).toBe(true);
+  });
+
+  it("is dropped once the companion stopped fetching, and expires when nobody fetches it", async () => {
+    const r = await rig();
+    r.adapter.outbox(r.meeting, 0);
+    r.clock.ms += CONNECTED_MS + 1;
+    expect(await r.adapter.tone(r.meeting)).toBe(false);
+    r.adapter.outbox(r.meeting, 0);
+    expect(await r.adapter.tone(r.meeting)).toBe(true);
+    // Still connected, and the unfetched tone expired: it does not block the next one.
+    r.clock.ms += TTL_MS + 1;
+    expect(await r.adapter.tone(r.meeting)).toBe(true);
+    // Fetched too late: a stale chime never plays.
+    r.clock.ms += TTL_MS + 1;
+    expect(r.adapter.outbox(r.meeting, 0).tone).toBe(false);
+  });
+
+  it("never plays for a meeting that left and never throws", async () => {
+    const r = await rig();
+    r.adapter.outbox(r.meeting, 0);
+    await r.adapter.leave(r.meeting);
+    expect(await r.adapter.tone(r.meeting)).toBe(false);
+    const other = new Meeting({ platform: "companion", bufferSize: 10 });
+    expect(await r.adapter.tone(other)).toBe(false);
+  });
+});
+
 describe("companion early transcription", () => {
   const SILENCE_MS = 500;
   const EARLY_MS = 150;
@@ -532,7 +595,7 @@ describe("companion platform end to end", () => {
     expect(body.next_seq).toBe(2);
     expect(await confirming).toMatchObject({ ok: true, delivery: "confirmed" });
     const later = (await (await outbox(id, "2")).json()) as { lines: unknown[]; next_seq: number };
-    expect(later).toEqual({ lines: [], next_seq: 2 });
+    expect(later).toEqual({ lines: [], next_seq: 2, tone: false });
     const unread = await harness().call("chat.post", {
       meeting_id: id,
       text: "nobody reads",
@@ -542,6 +605,18 @@ describe("companion platform end to end", () => {
     expect((await outbox(id, "-1")).status).toBe(400);
     expect((await outbox(id, undefined, "POST")).status).toBe(405);
     expect((await outbox("m_missing")).status).toBe(404);
+  });
+
+  it("hands the listening tone to the companion through its outbox once it is connected", async () => {
+    const id = await join();
+    const chime = () => harness().call("say.tone", { meeting_id: id });
+    // The companion has not fetched anything yet, so nobody would hear the chime.
+    expect(await chime()).toEqual({ ok: true, played: false });
+    expect(await (await outbox(id)).json()).toMatchObject({ tone: false });
+    expect(await chime()).toEqual({ ok: true, played: true });
+    expect(await chime()).toEqual({ ok: true, played: false });
+    expect(await (await outbox(id)).json()).toEqual({ lines: [], next_seq: 0, tone: true });
+    expect(await (await outbox(id)).json()).toMatchObject({ tone: false });
   });
 
   it("cannot speak, refuses long host names, and flushes speech on leave", async () => {

@@ -62,6 +62,8 @@ export const DEFAULTS = {
   companionMaxSegmentS: 20,
   companionVadThreshold: 500,
   companionOutboxMax: 200,
+  companionConnectedMs: 5000,
+  companionToneTtlMs: 4000,
 } as const;
 
 export type DiscordCommandScope = "guild" | "global" | "off";
@@ -130,6 +132,10 @@ export interface Config {
   companionMaxSegmentS: number;
   companionVadThreshold: number;
   companionOutboxMax: number;
+  /** A companion that fetched its outbox this recently is connected and can play the tone. */
+  companionConnectedMs: number;
+  /** A listening tone the companion has not fetched this long after it was asked for is dropped. */
+  companionToneTtlMs: number;
   logLevel: string | undefined;
 }
 
@@ -341,6 +347,16 @@ export function loadConfig(env: Env = process.env): Config {
       env,
       "QUORUM_COMPANION_OUTBOX_MAX",
       DEFAULTS.companionOutboxMax,
+    ),
+    companionConnectedMs: positiveInt(
+      env,
+      "QUORUM_COMPANION_CONNECTED_MS",
+      DEFAULTS.companionConnectedMs,
+    ),
+    companionToneTtlMs: positiveInt(
+      env,
+      "QUORUM_COMPANION_TONE_TTL_MS",
+      DEFAULTS.companionToneTtlMs,
     ),
     logLevel: optional(env, "QUORUM_LOG_LEVEL"),
   };

@@ -39,6 +39,11 @@ import {
  *
  * Every final segment logs one `companion: segment timing` line with the stages from the last
  * speech sample to the segment event (see SegmentTiming).
+ *
+ * The listening tone (say.tone) is played by the companion on the person's own computer: tone()
+ * marks one tone pending and the next outbox fetch carries `tone:true` once. It is only asked for
+ * while the companion is fetching its outbox (connected), and a tone left unfetched past
+ * QUORUM_COMPANION_TONE_TTL_MS is dropped, so a late chime never plays.
  */
 
 export const COMPANION_CHANNELS = ["call", "mic"] as const;
@@ -66,6 +71,14 @@ export interface OutboxLine {
   seq: number;
   text: string;
   at: string;
+}
+
+/** GET /companion/outbox. */
+export interface CompanionOutbox {
+  lines: OutboxLine[];
+  next_seq: number;
+  /** Play the listening tone now (once per tone asked for). */
+  tone: boolean;
 }
 
 /** An utterance transcribed ahead of its end; `text` is undefined when the request failed. */
@@ -115,6 +128,10 @@ interface Live {
   outboxSeq: number;
   /** Highest outbox seq the companion has fetched. */
   readSeq: number;
+  /** When the companion last fetched its outbox (undefined: never). */
+  polledAt: number | undefined;
+  /** When the pending listening tone was asked for (undefined: none pending). */
+  toneAt: number | undefined;
   /** Transcriptions run one after another so segments stay in spoken order. */
   chain: Promise<void>;
 }
@@ -170,6 +187,8 @@ export class CompanionAdapter implements PlatformAdapter {
       outbox: [],
       outboxSeq: 0,
       readSeq: 0,
+      polledAt: undefined,
+      toneAt: undefined,
       chain: Promise.resolve(),
     });
     meeting.setState("live");
@@ -385,18 +404,54 @@ export class CompanionAdapter implements PlatformAdapter {
     this.opts.log.info("companion: segment timing", { seq: segment.seq, ...timing });
   }
 
-  /** Lines for the companion window after `after`; fetching them marks them delivered. */
-  outbox(meeting: Meeting, after: number): { lines: OutboxLine[]; next_seq: number } {
+  /**
+   * Lines for the companion window after `after`; fetching them marks them delivered. `tone` is
+   * true once per listening tone asked for since the last fetch, while it is still fresh.
+   */
+  outbox(meeting: Meeting, after: number): CompanionOutbox {
     const live = this.live.get(meeting.id);
     if (!live) {
       throw new QuorumError("not_live", `the meeting is ${meeting.state}, not live`);
     }
+    const now = this.now();
+    live.polledAt = now;
+    const tone = this.toneFresh(live, now);
+    live.toneAt = undefined;
     const lines = live.outbox.filter((l) => l.seq > after);
     const last = lines.at(-1);
     if (last && last.seq > live.readSeq) {
       live.readSeq = last.seq;
     }
-    return { lines, next_seq: last ? last.seq : Math.max(after, 0) };
+    return { lines, next_seq: last ? last.seq : Math.max(after, 0), tone };
+  }
+
+  /** Whether a pending tone is still worth playing. */
+  private toneFresh(live: Live, now: number): boolean {
+    return live.toneAt !== undefined && now - live.toneAt <= this.opts.config.companionToneTtlMs;
+  }
+
+  /**
+   * Asks the companion to play the listening tone. Played (true) only while the companion is
+   * connected, i.e. it fetched its outbox within QUORUM_COMPANION_CONNECTED_MS; dropped (false)
+   * when it is not, or when a tone is already waiting to be fetched. The companion never speaks,
+   * so no line can be in progress. Never waits and never throws.
+   */
+  async tone(meeting: Meeting): Promise<boolean> {
+    const live = this.live.get(meeting.id);
+    if (!live || meeting.state !== "live") {
+      return false;
+    }
+    const now = this.now();
+    const connected =
+      live.polledAt !== undefined && now - live.polledAt <= this.opts.config.companionConnectedMs;
+    if (!connected) {
+      return false;
+    }
+    if (this.toneFresh(live, now)) {
+      return false;
+    }
+    live.toneAt = now;
+    return true;
   }
 
   async leave(meeting: Meeting): Promise<void> {
