@@ -120,7 +120,7 @@ export function createHttpServer(opts: HttpOptions): Server {
       });
       return;
     }
-    const server = createMcpServer(quorum);
+    const server = createMcpServer(quorum, log);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,

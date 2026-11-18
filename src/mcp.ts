@@ -1,6 +1,8 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { failure, type ToolResult } from "./errors.js";
+import type { Logger } from "./log.js";
+import { silentLogger } from "./log.js";
 import type { Quorum } from "./service.js";
 import { VERSION } from "./version.js";
 
@@ -153,11 +155,39 @@ export function callTool(q: Quorum, name: string, args: unknown): Promise<ToolRe
   }
 }
 
-export function createMcpServer(q: Quorum): Server {
+const TOOL_NAMES: ReadonlySet<string> = new Set(TOOLS.map((t) => t.name));
+
+/**
+ * One log line per tool call: tool, outcome, error code and duration. The tool name comes from
+ * the client, so anything outside the contract list is logged as "unknown" to keep the value
+ * set bounded. Arguments and results are never logged.
+ */
+export function logToolCall(
+  log: Logger,
+  name: string,
+  result: ToolResult,
+  durationMs: number,
+): void {
+  const fields = {
+    tool: TOOL_NAMES.has(name) ? name : "unknown",
+    ok: result.ok,
+    ...(result.ok ? {} : { error_code: result.error.code }),
+    duration_ms: Math.round(durationMs),
+  };
+  if (result.ok) {
+    log.info("tool call", fields);
+  } else {
+    log.warn("tool call failed", fields);
+  }
+}
+
+export function createMcpServer(q: Quorum, log: Logger = silentLogger): Server {
   const server = new Server({ name: "quorum", version: VERSION }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: TOOLS.map((t) => ({ ...t })) }));
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    const started = performance.now();
     const result = await callTool(q, req.params.name, req.params.arguments);
+    logToolCall(log, req.params.name, result, performance.now() - started);
     return {
       content: [{ type: "text", text: JSON.stringify(result) }],
       structuredContent: result as unknown as Record<string, unknown>,
