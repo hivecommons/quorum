@@ -1,0 +1,41 @@
+# quorum-scan-vexa: dependency/CVE scanning for the hivecommons/vexa fork.
+#
+# The fork cannot carry its own scanning workflows: GITHUB_TOKEN cannot push changes under
+# .github/workflows/ there, so upstream's workflows were removed. This quorum-owned workflow
+# scans the fork's default branch from here instead. Public repo, built-in token only; no secrets.
+# OSV-Scanner reads the lockfiles (pnpm-lock.yaml, Python requirements, etc.) and honours the
+# fork's own osv-scanner.toml for reviewed ignores. Any unignored vulnerability fails the run
+# (OSV-Scanner has no severity threshold), so the failed scheduled run is the alert.
+name: quorum-scan-vexa
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/quorum-scan-vexa.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quorum-scan-vexa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  osv-scanner:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: hivecommons/vexa
+          ref: main
+          path: vexa
+          persist-credentials: false
+      - uses: google/osv-scanner-action/osv-scanner-action@6bc832ee85d316ab9aeccf71929026841bd0e1ee # v2.7.1
+        with:
+          scan-args: |-
+            --recursive
+            --config=vexa/osv-scanner.toml
+            ./vexa
