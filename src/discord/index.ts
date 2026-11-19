@@ -13,7 +13,7 @@ import type { DiscordRuntime } from "./types.js";
 export function discordAdapters(
   load: () => Promise<DiscordRuntime> = loadDiscordRuntime,
 ): AdapterFactory {
-  return async ({ config, registry, log }) => {
+  return async ({ config, registry, log, metrics }) => {
     if (!config.discordTokenFile) {
       return {};
     }
@@ -35,6 +35,7 @@ export function discordAdapters(
               : undefined,
           ...(config.transcribeLanguage ? { language: config.transcribeLanguage } : {}),
           timeoutMs: config.transcribeTimeoutMs,
+          ...(metrics ? { metrics } : {}),
           hotwords: config.transcribeHotwords,
           retry: {
             maxAttempts: config.transcribeMaxAttempts,
@@ -51,6 +52,7 @@ export function discordAdapters(
               ? readSecretFile(config.ttsTokenFile, "QUORUM_TTS_TOKEN_FILE")
               : undefined,
           timeoutMs: config.ttsTimeoutMs,
+          ...(metrics ? { metrics } : {}),
         })
       : undefined;
     const adapter = new DiscordAdapter({ runtime, registry, log, config, transcriber, tts });

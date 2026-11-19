@@ -153,6 +153,11 @@ export class DiscordAdapter implements PlatformAdapter {
     return this.ready;
   }
 
+  /** For quorum_adapter_connected: the gateway login finished. */
+  connected(): boolean {
+    return this.ready;
+  }
+
   /**
    * Logs in and registers the /hive command. Resolves once the client is ready. Typed chat needs
    * the privileged MessageContent intent; when Discord refuses it, quorum logs that once and logs

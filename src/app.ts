@@ -4,6 +4,7 @@ import type { PlatformAdapter } from "./adapter.js";
 import { readSecretFile, type Config } from "./config.js";
 import { createHttpServer } from "./http.js";
 import type { Logger } from "./log.js";
+import { Metrics } from "./metrics.js";
 import { Registry, type Platform } from "./meeting.js";
 import { Quorum } from "./service.js";
 import { companionAdapter } from "./companion/index.js";
@@ -28,7 +29,12 @@ export type AdapterFactory = (ctx: {
   config: Config;
   registry: Registry;
   log: Logger;
-}) => Promise<Partial<Record<Platform, PlatformAdapter & { close?: () => Promise<void> }>>>;
+  metrics?: Metrics;
+}) => Promise<
+  Partial<
+    Record<Platform, PlatformAdapter & { close?: () => Promise<void>; connected?: () => boolean }>
+  >
+>;
 
 export async function startQuorum(
   config: Config,
@@ -44,6 +50,7 @@ export async function startQuorum(
       },
     );
   }
+  const metrics = new Metrics();
   const registry = new Registry(config.meetingRetentionS * MS_PER_S);
   const adapters: Partial<Record<Platform, PlatformAdapter & { close?: () => Promise<void> }>> = {};
   let stream: VexaStream | undefined;
@@ -54,6 +61,7 @@ export async function startQuorum(
       baseUrl: config.vexaUrl,
       apiKey,
       timeoutMs: config.vexaTimeoutMs,
+      metrics,
     });
     stream = new VexaStream({
       baseUrl: config.vexaUrl,
@@ -78,17 +86,26 @@ export async function startQuorum(
     adapters.google_meet = vexa;
     adapters.teams = vexa;
     adapters.zoom = vexa;
+    // The gateway socket only exists while a meeting is followed, so idle counts as connected.
+    const followed = stream;
+    metrics.adapter("vexa", () => followed.connected || followed.subscriptions === 0);
   } else {
     log.info("QUORUM_VEXA_URL is unset: Meet, Teams and Zoom answer platform_unavailable");
   }
-  const companion = companionAdapter(config, log);
+  const companion = companionAdapter(config, log, metrics);
   adapters.companion = companion;
+  metrics.adapter("companion", () => companion.connected());
   if (extraAdapters) {
-    Object.assign(adapters, await extraAdapters({ config, registry, log }));
+    const extra = await extraAdapters({ config, registry, log, metrics });
+    Object.assign(adapters, extra);
+    const discord = extra.discord;
+    if (discord?.connected) {
+      metrics.adapter("discord", () => discord.connected?.() ?? false);
+    }
   }
 
   const quorum = new Quorum({ config, registry, adapters, log });
-  const server = createHttpServer({ quorum, config, log, token, companion });
+  const server = createHttpServer({ quorum, config, log, token, companion, metrics });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(config.port, config.host, () => {

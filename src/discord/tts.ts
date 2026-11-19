@@ -1,4 +1,5 @@
 import { QuorumError } from "../errors.js";
+import { timedUpstream, type Metrics } from "../metrics.js";
 
 /**
  * Client for the shared Kokoro TTS service: OpenAI-compatible `POST /v1/audio/speech` with
@@ -16,6 +17,8 @@ export interface TtsClientOptions {
   url: string;
   token: () => string | undefined;
   timeoutMs: number;
+  /** Records each request to the service in quorum_upstream_* (service="tts"). */
+  metrics?: Metrics;
   fetchImpl?: typeof fetch;
 }
 
@@ -32,7 +35,11 @@ export class TtsClient {
   }
 
   /** Synthesizes `text` and returns 24 kHz s16le mono PCM. Failures are `upstream_error`. */
-  async synthesize(text: string, voice: string): Promise<Buffer> {
+  synthesize(text: string, voice: string): Promise<Buffer> {
+    return timedUpstream(this.opts.metrics, "tts", () => this.request(text, voice));
+  }
+
+  private async request(text: string, voice: string): Promise<Buffer> {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     const token = this.opts.token();
     if (token) {

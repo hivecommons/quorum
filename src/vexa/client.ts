@@ -1,4 +1,5 @@
 import { QuorumError, type ErrorCode } from "../errors.js";
+import { timedUpstream, type Metrics } from "../metrics.js";
 
 /**
  * REST client for the Vexa gateway (hivecommons/vexa core/gateway/contracts/api.v1). Auth is the
@@ -43,6 +44,8 @@ export interface VexaClientOptions {
   baseUrl: string;
   apiKey: () => string;
   timeoutMs: number;
+  /** Records each request to the gateway in quorum_upstream_* (service="vexa"). */
+  metrics?: Metrics;
   fetchImpl?: typeof fetch;
 }
 
@@ -113,7 +116,11 @@ export class VexaClient {
     return this.opts.baseUrl;
   }
 
-  async request<T>(
+  request<T>(method: string, path: string, body?: unknown): Promise<{ status: number; data: T }> {
+    return timedUpstream(this.opts.metrics, "vexa", () => this.send<T>(method, path, body));
+  }
+
+  private async send<T>(
     method: string,
     path: string,
     body?: unknown,

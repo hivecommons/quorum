@@ -1,4 +1,5 @@
 import { QuorumError } from "../errors.js";
+import { timedUpstream, type Metrics } from "../metrics.js";
 
 /**
  * Client for the shared CPU transcription service (hivecommons/vexa
@@ -48,6 +49,8 @@ export interface TranscriberOptions {
   /** Vocabulary for every request (QUORUM_TRANSCRIBE_HOTWORDS), after the per-call hints. */
   hotwords?: string[];
   retry?: Partial<RetryPolicy>;
+  /** Records each request to the service in quorum_upstream_* (service="transcribe"). */
+  metrics?: Metrics;
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
   /** Uniform [0, 1); the jitter source. */
@@ -178,7 +181,9 @@ export class Transcriber {
     const maxAttempts = Math.max(1, Math.floor(call.maxAttempts ?? this.retry.maxAttempts));
     for (let attempt = 1; ; attempt++) {
       try {
-        return await this.once(wav, prompt, hotwords);
+        return await timedUpstream(this.opts.metrics, "transcribe", () =>
+          this.once(wav, prompt, hotwords),
+        );
       } catch (err) {
         if (!(err instanceof Retryable)) {
           throw err;

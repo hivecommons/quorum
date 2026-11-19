@@ -5,6 +5,7 @@ import { ChunkGapError, isCompanionChannel, type CompanionAdapter } from "./comp
 import type { Config } from "./config.js";
 import { QuorumError } from "./errors.js";
 import type { Logger } from "./log.js";
+import type { Metrics } from "./metrics.js";
 import type { QuorumEvent, StateEvent } from "./meeting.js";
 import { createMcpServer } from "./mcp.js";
 import type { Quorum } from "./service.js";
@@ -12,7 +13,8 @@ import { CONTRACT_VERSION, VERSION } from "./version.js";
 
 /**
  * The loopback HTTP surface: `GET /healthz` (no auth), `POST /mcp` (MCP streamable HTTP,
- * stateless, JSON responses), `GET /events` (Server-Sent Events), and the companion platform's
+ * stateless, JSON responses), `GET /events` (Server-Sent Events), `GET /metrics` (Prometheus
+ * text), and the companion platform's
  * `POST /companion/audio` and `GET /companion/outbox`. Everything except /healthz needs
  * `Authorization: Bearer <token>`.
  */
@@ -89,10 +91,11 @@ export interface HttpOptions {
   log: Logger;
   token: string;
   companion?: CompanionAdapter;
+  metrics?: Metrics;
 }
 
 export function createHttpServer(opts: HttpOptions): Server {
-  const { quorum, config, log, token, companion } = opts;
+  const { quorum, config, log, token, companion, metrics } = opts;
 
   async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== "POST") {
@@ -120,7 +123,7 @@ export function createHttpServer(opts: HttpOptions): Server {
       });
       return;
     }
-    const server = createMcpServer(quorum, log);
+    const server = createMcpServer(quorum, log, metrics);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,
@@ -318,6 +321,15 @@ export function createHttpServer(opts: HttpOptions): Server {
           res.end();
         }
       });
+      return;
+    }
+    if (metrics && url.pathname === "/metrics") {
+      if (req.method !== "GET") {
+        sendJson(res, HTTP_METHOD_NOT_ALLOWED, { error: "GET only" }, { Allow: "GET" });
+        return;
+      }
+      res.writeHead(HTTP_OK, { "Content-Type": "text/plain; version=0.0.4; charset=utf-8" });
+      res.end(metrics.render());
       return;
     }
     if (url.pathname === "/events") {

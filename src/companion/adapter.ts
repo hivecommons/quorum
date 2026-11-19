@@ -157,6 +157,11 @@ export class CompanionAdapter implements PlatformAdapter {
     this.now = opts.now ?? Date.now;
   }
 
+  /** For quorum_adapter_connected: whether a join can succeed (audio can be transcribed). */
+  connected(): boolean {
+    return this.opts.transcriber !== undefined;
+  }
+
   async join(meeting: Meeting, args: JoinArgs): Promise<void> {
     if (!this.opts.transcriber) {
       throw new QuorumError(
