@@ -35,7 +35,7 @@ jobs:
           persist-credentials: false
       # On pull_request the run only proves this workflow still executes; vexa's own findings must
       # not block a quorum PR. Scheduled and manual runs stay strict and are the alert.
-      - uses: google/osv-scanner-action/osv-scanner-action@6bc832ee85d316ab9aeccf71929026841bd0e1ee # v2.7.1
+      - uses: google/osv-scanner-action/osv-scanner-action@32d3cd482bdadfb38b186c0ad1b031902d55d932 # v2.7.1
         continue-on-error: ${{ github.event_name == 'pull_request' }}
         with:
           scan-args: |-
