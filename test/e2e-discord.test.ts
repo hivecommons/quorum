@@ -19,7 +19,7 @@ import {
   type FakePlayer,
   type FakeRuntime,
 } from "./helpers/fakeDiscord.js";
-import { pcmFrames, upsampleToStereo48k } from "../src/discord/audio.js";
+import { pcmFrames, upsampleToStereo48k } from "../src/audio.js";
 import { fadeEdges } from "../src/discord/speech.js";
 import { renderListeningTone } from "../src/tone.js";
 import {

@@ -16,10 +16,10 @@ import {
   trimSilence,
   upsampleToStereo48k,
   Utterance,
-} from "./audio.js";
+} from "../audio.js";
 import { SpeechSynth, splitSentences } from "./speech.js";
 import { renderListeningTone } from "../tone.js";
-import { nameHints, type Transcriber } from "./transcribe.js";
+import { nameHints, type Transcriber } from "../transcribe.js";
 import type { TtsClient } from "./tts.js";
 import type {
   AudioPlayerLike,

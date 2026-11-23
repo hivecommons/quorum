@@ -7,7 +7,7 @@ import {
 } from "../src/companion/adapter.js";
 import { FRAME_SAMPLES, rms, Segmenter } from "../src/companion/segmenter.js";
 import { loadConfig } from "../src/config.js";
-import type { Transcriber, TranscribeOptions } from "../src/discord/transcribe.js";
+import type { Transcriber, TranscribeOptions } from "../src/transcribe.js";
 import { silentLogger, type Logger } from "../src/log.js";
 import { Meeting, type QuorumEvent } from "../src/meeting.js";
 import { FakeStt } from "./helpers/fakeDiscord.js";

@@ -2,7 +2,7 @@ import type { AdapterFactory } from "../app.js";
 import { readSecretFile } from "../config.js";
 import { DiscordAdapter } from "./adapter.js";
 import { loadDiscordRuntime } from "./runtime.js";
-import { Transcriber } from "./transcribe.js";
+import { Transcriber } from "../transcribe.js";
 import { TtsClient } from "./tts.js";
 import type { DiscordRuntime } from "./types.js";
 

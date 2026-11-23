@@ -6,8 +6,8 @@ import type {
   SayOutcome,
 } from "../adapter.js";
 import type { Config } from "../config.js";
-import { encodeWav } from "../discord/audio.js";
-import { nameHints, type Transcriber } from "../discord/transcribe.js";
+import { encodeWav } from "../audio.js";
+import { nameHints, type Transcriber } from "../transcribe.js";
 import { QuorumError } from "../errors.js";
 import type { Logger } from "../log.js";
 import type { Meeting, Person } from "../meeting.js";

@@ -13,7 +13,7 @@ import {
   pcmFrames,
   toMono16k,
   upsampleToStereo48k,
-} from "../src/discord/audio.js";
+} from "../src/audio.js";
 import { isDisallowedIntents } from "../src/discord/adapter.js";
 import { loadDiscordRuntime } from "../src/discord/runtime.js";
 import {
@@ -24,7 +24,7 @@ import {
   PROMPT_MAX_CHARS,
   Transcriber,
   transcriptionsUrl,
-} from "../src/discord/transcribe.js";
+} from "../src/transcribe.js";
 import { TtsClient, speechUrl } from "../src/discord/tts.js";
 import { FakeTts, pcm24, pcm48 } from "./helpers/fakeDiscord.js";
 
