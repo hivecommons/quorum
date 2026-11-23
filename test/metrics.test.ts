@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { TtsClient } from "../src/discord/tts.js";
-import { Transcriber } from "../src/discord/transcribe.js";
+import { Transcriber } from "../src/transcribe.js";
 import { TOOLS, boundedToolName } from "../src/mcp.js";
 import { DURATION_BUCKETS, Metrics, timedUpstream } from "../src/metrics.js";
 import { VexaClient } from "../src/vexa/client.js";

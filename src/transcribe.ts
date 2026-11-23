@@ -1,5 +1,5 @@
-import { QuorumError } from "../errors.js";
-import { timedUpstream, type Metrics } from "../metrics.js";
+import { QuorumError } from "./errors.js";
+import { timedUpstream, type Metrics } from "./metrics.js";
 
 /**
  * Client for the shared CPU transcription service (hivecommons/vexa

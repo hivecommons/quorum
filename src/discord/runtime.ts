@@ -1,5 +1,5 @@
 import type { DiscordRuntime, OpusDecoderLike, OpusEncoderLike } from "./types.js";
-import { DISCORD_CHANNELS, DISCORD_SAMPLE_RATE } from "./audio.js";
+import { DISCORD_CHANNELS, DISCORD_SAMPLE_RATE } from "../audio.js";
 
 /**
  * Loads the real discord.js, @discordjs/voice and opusscript. Loaded lazily so a quorum without

@@ -1,5 +1,5 @@
 import { readSecretFile, type Config } from "../config.js";
-import { Transcriber } from "../discord/transcribe.js";
+import { Transcriber } from "../transcribe.js";
 import type { Logger } from "../log.js";
 import type { Metrics } from "../metrics.js";
 import { CompanionAdapter } from "./adapter.js";
