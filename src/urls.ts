@@ -217,7 +217,12 @@ export function parseMeetingUrl(input: string, options: ParseOptions = {}): Pars
   }
 
   if (isTeamsEnterpriseHost(host)) {
-    const fragment = decodeURIComponent(url.hash.replace(/^#/, ""));
+    let fragment: string;
+    try {
+      fragment = decodeURIComponent(url.hash.replace(/^#/, ""));
+    } catch {
+      throw invalid("Teams link fragment is not valid percent-encoding");
+    }
     if (["/v2", ""].includes(path.replace(/\/+$/, "")) && fragment.startsWith("/meet/")) {
       const inner = new URL("https://x" + fragment);
       const fm = TEAMS_SHORT.exec(inner.pathname);

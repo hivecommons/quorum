@@ -106,6 +106,18 @@ describe("parseMeetingUrl: Teams", () => {
     expect(() => parseMeetingUrl(url)).toThrow(/Teams|teams/);
   });
 
+  it("rejects a malformed percent escape in the fragment as invalid_argument", () => {
+    let caught: unknown;
+    try {
+      parseMeetingUrl("https://teams.microsoft.com/v2/#/meet/%E0%A4%A");
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(QuorumError);
+    expect((caught as QuorumError).code).toBe("invalid_argument");
+    expect((caught as QuorumError).message).toMatch(/percent-encoding/);
+  });
+
   it("does not accept look-alike hosts", () => {
     expect(() =>
       parseMeetingUrl("https://teams.microsoft.com.evil.example/meet/1234567890123"),
