@@ -143,8 +143,8 @@ export function createHttpServer(opts: HttpOptions): Server {
     }
     const meetingId = url.searchParams.get("meeting_id") || undefined;
     const afterRaw = url.searchParams.get("after_seq");
-    const afterSeq = afterRaw === null ? undefined : Number(afterRaw);
-    if (afterSeq !== undefined && (!Number.isInteger(afterSeq) || afterSeq < 0)) {
+    const afterSeq = afterRaw === null ? undefined : nonNegativeInt(afterRaw);
+    if (afterRaw !== null && afterSeq === undefined) {
       sendJson(res, HTTP_BAD_REQUEST, { error: "after_seq must be a non-negative integer" });
       return;
     }
