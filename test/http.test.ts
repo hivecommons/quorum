@@ -79,6 +79,9 @@ describe("HTTP surface", () => {
     expect((await rawRequest("POST", "/events")).status).toBe(405);
     expect((await rawRequest("GET", "/events?meeting_id=m_missing")).status).toBe(404);
     expect((await rawRequest("GET", "/events?after_seq=-2")).status).toBe(400);
+    for (const bad of ["", "1e2", "0x10", "4.0"]) {
+      expect((await rawRequest("GET", `/events?after_seq=${bad}`)).status).toBe(400);
+    }
   });
 
   it("answers a JSON-RPC error when the MCP request is not valid JSON-RPC", async () => {
